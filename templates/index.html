@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}ExplainDengue - Home{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto">
+    <h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Welcome to ExplainDengue</h1>
+    
+    <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+        <p class="text-lg mb-4">ExplainDengue is an advanced disease outbreak prediction system that uses machine learning to forecast dengue fever outbreaks in various cities.</p>
+        <p class="text-lg mb-4">Our system utilizes historical data on temperature, rainfall, population, and past dengue cases to make accurate predictions and provide explanations for the forecasts.</p>
+    </div>
+    
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-2xl font-semibold mb-4">Features</h2>
+            <ul class="list-disc pl-5">
+                <li>Generate fictional dengue outbreak data</li>
+                <li>Train machine learning models</li>
+                <li>Make predictions for specific cities</li>
+                <li>Visualize historical trends</li>
+            </ul>
+        </div>
+        
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-2xl font-semibold mb-4">Get Started</h2>
+            <p class="mb-4">To begin using ExplainDengue:</p>
+            <ol class="list-decimal pl-5">
+                <li>Go to the Data Management page to generate data</li>
+                <li>Visit the Model Management page to train the model</li>
+                <li>Use the Dashboard to make predictions and view results</li>
+            </ol>
+        </div>
+    </div>
+</div>
+{% endblock %}

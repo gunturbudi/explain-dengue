@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}ExplainDengue - Dashboard{% endblock %}
+
+{% block content %}
+<h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Dengue Outbreak Dashboard</h1>
+
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+    <div class="bg-white p-4 rounded-lg shadow-md">
+        <h2 class="text-xl font-semibold mb-2">Total Cities</h2>
+        <p class="text-3xl font-bold text-blue-600">{{ total_cities }}</p>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow-md">
+        <h2 class="text-xl font-semibold mb-2">Total Cases</h2>
+        <p class="text-3xl font-bold text-red-600">{{ total_cases }}</p>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow-md">
+        <h2 class="text-xl font-semibold mb-2">Avg Temperature</h2>
+        <p class="text-3xl font-bold text-orange-600">{{ "%.2f"|format(avg_temperature) }}°C</p>
+    </div>
+    <div class="bg-white p-4 rounded-lg shadow-md">
+        <h2 class="text-xl font-semibold mb-2">Avg Rainfall</h2>
+        <p class="text-3xl font-bold text-green-600">{{ "%.2f"|format(avg_rainfall) }} mm</p>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+    <div class="bg-white p-6 rounded-lg shadow-md">
+        <h2 class="text-2xl font-semibold mb-4">Outbreak Prediction</h2>
+        <select id="citySelect" class="w-full p-2 border rounded mb-4">
+            <option value="">Select a city</option>
+        </select>
+        <button id="predictButton" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Predict</button>
+        <div id="predictionResult" class="mt-4"></div>
+        <div id="predictionProgress" class="mt-4 hidden">
+            <div class="animate-pulse flex space-x-4">
+                <div class="flex-1 space-y-4 py-1">
+                    <div class="h-4 bg-blue-400 rounded w-3/4"></div>
+                    <div class="space-y-2">
+                        <div class="h-4 bg-blue-400 rounded"></div>
+                        <div class="h-4 bg-blue-400 rounded w-5/6"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="bg-white p-6 rounded-lg shadow-md">
+        <h2 class="text-2xl font-semibold mb-4">Historical Trend</h2>
+        <img id="plot" class="mx-auto" alt="Dengue Cases Plot">
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const citySelect = document.getElementById('citySelect');
+    const predictButton = document.getElementById('predictButton');
+    const predictionResult = document.getElementById('predictionResult');
+    const predictionProgress = document.getElementById('predictionProgress');
+    const plot = document.getElementById('plot');
+
+    function fetchCities() {
+        fetch('/get_cities')
+            .then(response => response.json())
+            .then(data => {
+                citySelect.innerHTML = '<option value="">Select a city</option>';
+                data.cities.forEach(city => {
+                    const option = document.createElement('option');
+                    option.value = city;
+                    option.textContent = city;
+                    citySelect.appendChild(option);
+                });
+            });
+    }
+
+    fetchCities();
+
+    predictButton.addEventListener('click', async () => {
+        const cityName = citySelect.value;
+        if (!cityName) {
+            alert('Please select a city');
+            return;
+        }
+        
+        predictionResult.innerHTML = '';
+        predictionProgress.classList.remove('hidden');
+        
+        const response = await fetch('/predict', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `city_name=${encodeURIComponent(cityName)}`
+        });
+        const data = await response.json();
+        
+        predictionProgress.classList.add('hidden');
+        
+        if (data.error) {
+            predictionResult.innerHTML = `<p class="text-red-600">${data.error}</p>`;
+        } else {
+            predictionResult.innerHTML = `
+                <p class="font-semibold">Prediction: ${data.prediction.toFixed(2)} cases</p>
+                <p class="mt-2">${data.explanation}</p>
+            `;
+        }
+    });
+
+    fetch('/plot')
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                plot.alt = data.error;
+            } else {
+                plot.src = 'data:image/png;base64,' + data.plot;
+            }
+        });
+});
+</script>
+{% endblock %}

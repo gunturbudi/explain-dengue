@@ -1,0 +1,15 @@
+name: explain-dengue
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+    - Flask
+    - Flask-SQLAlchemy
+    - pandas
+    - numpy
+    - torch
+    - torch-geometric
+    - scikit-learn
+    - matplotlib

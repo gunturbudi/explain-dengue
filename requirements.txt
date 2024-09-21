@@ -1,0 +1,8 @@
+Flask
+Flask-SQLAlchemy
+pandas
+numpy
+torch
+torch-geometric
+scikit-learn
+matplotlib

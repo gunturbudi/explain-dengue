@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}ExplainDengue - Data Management{% endblock %}
+
+{% block content %}
+<h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Data Management</h1>
+
+<div class="bg-white p-6 rounded-lg shadow-md mb-8">
+    <h2 class="text-2xl font-semibold mb-4">Generate Fictional Data</h2>
+    <button id="generateDataButton" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Generate Data</button>
+    <p id="dataStatus" class="mt-4"></p>
+    <div id="dataProgress" class="mt-4 hidden">
+        <div class="animate-pulse flex space-x-4">
+            <div class="flex-1 space-y-4 py-1">
+                <div class="h-4 bg-green-400 rounded w-3/4"></div>
+                <div class="space-y-2">
+                    <div class="h-4 bg-green-400 rounded"></div>
+                    <div class="h-4 bg-green-400 rounded w-5/6"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="bg-white p-6 rounded-lg shadow-md">
+    <h2 class="text-2xl font-semibold mb-4">Sample Data</h2>
+    <div class="overflow-x-auto">
+        <table class="min-w-full bg-white">
+            <thead class="bg-gray-800 text-white">
+                <tr>
+                    <th class="py-3 px-4 text-left">City</th>
+                    <th class="py-3 px-4 text-left">Date</th>
+                    <th class="py-3 px-4 text-left">Temperature</th>
+                    <th class="py-3 px-4 text-left">Rainfall</th>
+                    <th class="py-3 px-4 text-left">Population</th>
+                    <th class="py-3 px-4 text-left">Dengue Cases</th>
+                </tr>
+            </thead>
+            <tbody class="text-gray-700">
+                {% for record in sample_data %}
+                <tr>
+                    <td class="py-3 px-4">{{ record.city }}</td>
+                    <td class="py-3 px-4">{{ record.date }}</td>
+                    <td class="py-3 px-4">{{ "%.2f"|format(record.temperature) }}°C</td>
+                    <td class="py-3 px-4">{{ "%.2f"|format(record.rainfall) }} mm</td>
+                    <td class="py-3 px-4">{{ record.population|int }}</td>
+                    <td class="py-3 px-4">{{ record.dengue_cases }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const generateDataButton = document.getElementById('generateDataButton');
+    const dataStatus = document.getElementById('dataStatus');
+    const dataProgress = document.getElementById('dataProgress');
+
+    generateDataButton.addEventListener('click', async () => {
+        dataStatus.textContent = 'Generating data...';
+        generateDataButton.disabled = true;
+        dataProgress.classList.remove('hidden');
+        
+        const response = await fetch('/generate_data', { method: 'POST' });
+        const data = await response.json();
+        
+        dataProgress.classList.add('hidden');
+        dataStatus.textContent = data.message;
+        
+        if (data.message.includes("successfully")) {
+            location.reload(); // Reload the page to show the new data
+        } else {
+            generateDataButton.disabled = false;
+        }
+    });
+});
+</script>
+{% endblock %}
