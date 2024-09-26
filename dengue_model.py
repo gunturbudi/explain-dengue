@@ -123,8 +123,6 @@ def evaluate_model(model, test_data):
         r2 = r2_score(test_data.y[test_data.test_mask].cpu().numpy(), out[test_data.test_mask].cpu().numpy())
     return mse, r2
 
-# dengue_model.py (continued)
-
 def generate_explanation(city, prediction, features, thresholds):
     rainfall = features['rainfall']
     temperature = features['temperature']
