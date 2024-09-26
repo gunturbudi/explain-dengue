@@ -123,10 +123,54 @@ def evaluate_model(model, test_data):
         r2 = r2_score(test_data.y[test_data.test_mask].cpu().numpy(), out[test_data.test_mask].cpu().numpy())
     return mse, r2
 
-def generate_explanation(city, prediction, features, thresholds):
-    rainfall = features['rainfall']
-    temperature = features['temperature']
-    population = features['population']
+# def generate_explanation(city, prediction, features, thresholds):
+#     rainfall = features['rainfall']
+#     temperature = features['temperature']
+#     population = features['population']
+    
+#     risk_level = "high" if prediction > thresholds['high_risk'] else "moderate" if prediction > thresholds['moderate_risk'] else "low"
+    
+#     explanation = f"The system predicts a {risk_level} dengue risk in {city} with an estimated {prediction:.2f} cases in the next two weeks. "
+    
+#     reasons = []
+#     if rainfall > thresholds['heavy_rainfall']:
+#         reasons.append(f"heavy rainfall ({rainfall:.2f} mm)")
+#     if temperature > thresholds['high_temperature']:
+#         reasons.append(f"high temperature ({temperature:.2f}°C)")
+#     if population > thresholds['high_population_density']:
+#         reasons.append(f"high population density ({population:.0f} people)")
+    
+#     if reasons:
+#         explanation += "This prediction is based on the following factors: " + ", ".join(reasons) + ". "
+#     else:
+#         explanation += "No specific high-risk factors were identified, but vigilance is still recommended. "
+    
+#     recommendations = {
+#         "high": [
+#             "Intensify vector control measures",
+#             "Conduct public awareness campaigns",
+#             "Ensure hospitals are prepared for potential outbreaks"
+#         ],
+#         "moderate": [
+#             "Continue regular mosquito control activities",
+#             "Encourage community participation in eliminating breeding sites",
+#             "Monitor local health facilities for increased dengue cases"
+#         ],
+#         "low": [
+#             "Maintain routine surveillance",
+#             "Educate the public on personal protection measures",
+#             "Keep emergency response plans updated"
+#         ]
+#     }
+    
+#     explanation += "Based on this risk level, we recommend: "
+#     explanation += ", ".join(recommendations[risk_level]) + "."
+    
+#     return explanation
+def generate_explanation(city_name, prediction, feature_dict, thresholds, context, stats_analysis):
+    rainfall = feature_dict['rainfall']
+    temperature = feature_dict['temperature']
+    population = feature_dict['population']
     
     risk_level = "high" if prediction > thresholds['high_risk'] else "moderate" if prediction > thresholds['moderate_risk'] else "low"
     
@@ -144,6 +188,24 @@ def generate_explanation(city, prediction, features, thresholds):
         explanation += "This prediction is based on the following factors: " + ", ".join(reasons) + ". "
     else:
         explanation += "No specific high-risk factors were identified, but vigilance is still recommended. "
+    
+    # Add statistical analysis insights
+    explanation += f"\n\nStatistical Analysis:\n"
+    explanation += f"- Average dengue cases: {stats_analysis['mean_cases']:.2f} (median: {stats_analysis['median_cases']:.2f})\n"
+    explanation += f"- Case variability: {stats_analysis['std_cases']:.2f} (standard deviation)\n"
+    explanation += f"- Temperature correlation: {stats_analysis['temp_correlation']:.2f} "
+    explanation += f"({'significant' if stats_analysis['temp_correlation_p'] < 0.05 else 'not significant'})\n"
+    explanation += f"- Rainfall correlation: {stats_analysis['rain_correlation']:.2f} "
+    explanation += f"({'significant' if stats_analysis['rain_correlation_p'] < 0.05 else 'not significant'})\n"
+    explanation += f"- Trend: {stats_analysis['trend_direction']} "
+    explanation += f"(from {stats_analysis['trend_start']:.2f} to {stats_analysis['trend_end']:.2f} cases)\n"
+    
+    # Add insights based on statistical analysis
+    if stats_analysis['temp_correlation_p'] < 0.05:
+        explanation += f"Temperature shows a significant {'positive' if stats_analysis['temp_correlation'] > 0 else 'negative'} correlation with dengue cases. "
+    if stats_analysis['rain_correlation_p'] < 0.05:
+        explanation += f"Rainfall shows a significant {'positive' if stats_analysis['rain_correlation'] > 0 else 'negative'} correlation with dengue cases. "
+    explanation += f"The overall trend of dengue cases is {stats_analysis['trend_direction'].lower()}. "
     
     recommendations = {
         "high": [
@@ -163,7 +225,15 @@ def generate_explanation(city, prediction, features, thresholds):
         ]
     }
     
-    explanation += "Based on this risk level, we recommend: "
-    explanation += ", ".join(recommendations[risk_level]) + "."
+    explanation += "\nBased on this risk level and statistical analysis, we recommend: "
+    explanation += ", ".join(recommendations[risk_level]) + ". "
+    
+    # Add recommendations based on statistical insights
+    if stats_analysis['trend_direction'] == 'Increasing':
+        explanation += "Given the increasing trend, consider allocating additional resources for dengue prevention and control. "
+    if stats_analysis['temp_correlation_p'] < 0.05 and stats_analysis['temp_correlation'] > 0:
+        explanation += "With temperature significantly correlated to cases, intensify prevention efforts during warmer periods. "
+    if stats_analysis['rain_correlation_p'] < 0.05 and stats_analysis['rain_correlation'] > 0:
+        explanation += "As rainfall is significantly correlated with cases, increase vigilance and vector control during rainy seasons. "
     
     return explanation

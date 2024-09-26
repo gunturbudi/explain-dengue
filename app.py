@@ -161,6 +161,58 @@ def plot():
     
     return jsonify({"plot": plot_data})
 
+
+# Calculate threshold score
+def fetch_city_data(city_name, weeks=12):
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(weeks=weeks)
+    
+    stmt = select(CityData).where(
+        (CityData.city == city_name) &
+        (CityData.date >= start_date) &
+        (CityData.date <= end_date)
+    )
+    with engine.connect() as connection:
+        result = connection.execute(stmt)
+        data = pd.DataFrame(result.fetchall(), columns=result.keys())
+    
+    data['week'] = pd.to_datetime(data['date']).dt.isocalendar().week
+    return data
+
+def calculate_thresholds(data):
+    return {
+        'high_risk': np.percentile(data['dengue_cases'], 75),
+        'moderate_risk': np.percentile(data['dengue_cases'], 50),
+        'heavy_rainfall': np.percentile(data['rainfall'], 75),
+        'high_temperature': np.percentile(data['temperature'], 75),
+    }
+
+def perform_statistical_analysis(data):
+    # Basic statistics
+    stats_dict = {
+        'mean_cases': data['dengue_cases'].mean(),
+        'median_cases': data['dengue_cases'].median(),
+        'std_cases': data['dengue_cases'].std(),
+        'mean_temperature': data['temperature'].mean(),
+        'mean_rainfall': data['rainfall'].mean(),
+    }
+    
+    # Correlation analysis
+    corr_temp = stats.pearsonr(data['temperature'], data['dengue_cases'])
+    corr_rain = stats.pearsonr(data['rainfall'], data['dengue_cases'])
+    stats_dict['temp_correlation'] = corr_temp[0]
+    stats_dict['temp_correlation_p'] = corr_temp[1]
+    stats_dict['rain_correlation'] = corr_rain[0]
+    stats_dict['rain_correlation_p'] = corr_rain[1]
+    
+    # Trend analysis
+    trend = seasonal_decompose(data['dengue_cases'], model='additive', period=4).trend
+    stats_dict['trend_start'] = trend.iloc[0]
+    stats_dict['trend_end'] = trend.iloc[-1]
+    stats_dict['trend_direction'] = 'Increasing' if trend.iloc[-1] > trend.iloc[0] else 'Decreasing'
+    
+    return stats_dict
+
 @app.route('/predict', methods=['POST'])
 def predict():
     global model, graph_data, feature_scaler, city_names
@@ -187,15 +239,29 @@ def predict():
         'population': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 2]
     }
     
-    thresholds = {
-        'high_risk': 50,
-        'moderate_risk': 20,
-        'heavy_rainfall': 100,
-        'high_temperature': 30,
-        'high_population_density': 1000000
+    city_data = fetch_city_data(city_name)
+    thresholds = calculate_thresholds(city_data)
+    stats_analysis = perform_statistical_analysis(city_data)
+    
+    context = {
+        'current_week': datetime.now().isocalendar().week,
+        'weekly_data': city_data.groupby('week').agg({
+            'temperature': 'mean',
+            'rainfall': 'mean',
+            'dengue_cases': 'sum'
+        }).to_dict()
     }
     
-    explanation = generate_explanation(city_name, prediction, feature_dict, thresholds)
+    # thresholds = {
+    #     'high_risk': 50,
+    #     'moderate_risk': 20,
+    #     'heavy_rainfall': 100,
+    #     'high_temperature': 30,
+    #     'high_population_density': 1000000
+    # }
+    
+    # explanation = generate_explanation(city_name, prediction, feature_dict, thresholds)
+    explanation = generate_explanation(city_name, prediction, feature_dict, thresholds, context, stats_analysis)
     
     return jsonify({
         "prediction": prediction,
