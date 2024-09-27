@@ -3,16 +3,21 @@ import pandas as pd
 import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import io
 import base64
-from sqlalchemy import select, create_engine
 import os
 from geopy.distance import geodesic
 from flask_migrate import Migrate
 from datetime import datetime, timedelta
-from scipy import stats
-from statsmodels.tsa.seasonal import seasonal_decompose
+from sqlalchemy import select, create_engine, and_, func
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 from models import db, CityData
 
@@ -37,7 +42,8 @@ from dengue_model import (
     train_test_split_graph,
     generate_explanation,
     train_model,
-    evaluate_model
+    evaluate_model,
+    perform_statistical_analysis
 )
 
 # Global variables to store the model and data
@@ -245,38 +251,22 @@ def fetch_city_data(city_name, weeks=12):
     return data
 
 def calculate_thresholds(data):
+    if data.empty:
+        # Return default values if the data is empty
+        return {
+            'high_risk': 50,
+            'moderate_risk': 20,
+            'heavy_rainfall': 100,
+            'high_temperature': 30,
+        }
+    
     return {
-        'high_risk': np.percentile(data['dengue_cases'], 75),
-        'moderate_risk': np.percentile(data['dengue_cases'], 50),
-        'heavy_rainfall': np.percentile(data['rainfall'], 75),
-        'high_temperature': np.percentile(data['temperature'], 75),
+        'high_risk': np.percentile(data['dengue_cases'], 75) if len(data['dengue_cases']) > 0 else 50,
+        'moderate_risk': np.percentile(data['dengue_cases'], 50) if len(data['dengue_cases']) > 0 else 20,
+        'heavy_rainfall': np.percentile(data['rainfall'], 75) if len(data['rainfall']) > 0 else 100,
+        'high_temperature': np.percentile(data['temperature'], 75) if len(data['temperature']) > 0 else 30,
     }
 
-def perform_statistical_analysis(data):
-    # Basic statistics
-    stats_dict = {
-        'mean_cases': data['dengue_cases'].mean(),
-        'median_cases': data['dengue_cases'].median(),
-        'std_cases': data['dengue_cases'].std(),
-        'mean_temperature': data['temperature'].mean(),
-        'mean_rainfall': data['rainfall'].mean(),
-    }
-    
-    # Correlation analysis
-    corr_temp = stats.pearsonr(data['temperature'], data['dengue_cases'])
-    corr_rain = stats.pearsonr(data['rainfall'], data['dengue_cases'])
-    stats_dict['temp_correlation'] = corr_temp[0]
-    stats_dict['temp_correlation_p'] = corr_temp[1]
-    stats_dict['rain_correlation'] = corr_rain[0]
-    stats_dict['rain_correlation_p'] = corr_rain[1]
-    
-    # Trend analysis
-    trend = seasonal_decompose(data['dengue_cases'], model='additive', period=4).trend
-    stats_dict['trend_start'] = trend.iloc[0]
-    stats_dict['trend_end'] = trend.iloc[-1]
-    stats_dict['trend_direction'] = 'Increasing' if trend.iloc[-1] > trend.iloc[0] else 'Decreasing'
-    
-    return stats_dict
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -294,68 +284,130 @@ def predict():
     if model is None:
         return jsonify({"error": "Model not trained. Please train the model first."})
     
-    with torch.no_grad():
-        prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)[city_index].item()
+    try:
+        with torch.no_grad():
+            prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)[city_index].item()
+        
+        # Check for NaN in prediction
+        if np.isnan(prediction):
+            raise ValueError("NaN value in prediction")
+        
+        features = graph_data.x[city_index].cpu().numpy()
+        feature_dict = {
+            'rainfall': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 1],
+            'temperature': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 0],
+            'population': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 2]
+        }
+        
+        city_data = fetch_city_data(city_name)
+        thresholds = calculate_thresholds(city_data)
+        
+        if len(city_data) >= 2:
+            stats_analysis = perform_statistical_analysis(city_data)
+        else:
+            stats_analysis = None
+        
+        # Find neighboring cities with elevated risk
+        neighboring_cities = []
+        for i, edge in enumerate(graph_data.edge_index.t()):
+            if edge[0] == city_index:
+                neighbor_index = edge[1]
+                neighbor_prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)[neighbor_index].item()
+                if neighbor_prediction > thresholds['moderate_risk']:
+                    neighboring_cities.append(city_names[neighbor_index])
+        
+        explanation = generate_explanation(city_name, prediction, feature_dict, thresholds, neighboring_cities, stats_analysis)
+        
+        return jsonify(explanation)
     
-    features = graph_data.x[city_index].cpu().numpy()
-    feature_dict = {
-        'rainfall': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 1],
-        'temperature': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 0],
-        'population': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 2]
-    }
-    
-    city_data = fetch_city_data(city_name)
-    thresholds = calculate_thresholds(city_data)
-    stats_analysis = perform_statistical_analysis(city_data)
-    
-    context = {
-        'current_week': datetime.now().isocalendar().week,
-        'weekly_data': city_data.groupby('week').agg({
-            'temperature': 'mean',
-            'rainfall': 'mean',
-            'dengue_cases': 'sum'
-        }).to_dict()
-    }
-    
-    # Find neighboring cities with elevated risk
-    neighboring_cities = []
-    for i, edge in enumerate(graph_data.edge_index.t()):
-        if edge[0] == city_index:
-            neighbor_index = edge[1]
-            neighbor_prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)[neighbor_index].item()
-            if neighbor_prediction > thresholds['moderate_risk']:
-                neighboring_cities.append(city_names[neighbor_index])
-    
-    explanation = generate_explanation(city_name, prediction, feature_dict, thresholds, context, stats_analysis, neighboring_cities)
-    
-    return jsonify(explanation)
+    except Exception as e:
+        logger.error(f"Error in predict: {str(e)}", exc_info=True)
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
 @app.route('/risk_monitor')
 def risk_monitor():
     return render_template('risk_monitor.html')
 
+
+def fetch_city_data(city_name, weeks=12):
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(weeks=weeks)
+    
+    stmt = select(CityData).where(
+        (CityData.city == city_name) &
+        (CityData.date >= start_date) &
+        (CityData.date <= end_date)
+    )
+    with engine.connect() as connection:
+        result = connection.execute(stmt)
+        data = pd.DataFrame(result.fetchall(), columns=result.keys())
+    
+    data['week'] = pd.to_datetime(data['date']).dt.isocalendar().week
+    return data
+
 @app.route('/get_risk_data')
 def get_risk_data():
     global model, graph_data, feature_scaler, city_names, engine
 
+    logger.info("Starting get_risk_data function")
+
     if model is None:
-        return jsonify({"error": "Model not trained yet."})
+        logger.warning("Model not trained yet")
+        return jsonify({"error": "Model not trained yet. Please train the model first."})
 
     try:
-        # Fetch the latest data for each city
-        stmt = select(CityData).distinct(CityData.city).order_by(CityData.city, CityData.date.desc())
+        # Fetch all unique cities
+        logger.info("Fetching unique cities")
+        stmt = select(CityData.city).distinct()
+        with engine.connect() as connection:
+            result = connection.execute(stmt)
+            cities = [row[0] for row in result]
+
+        logger.info(f"Found {len(cities)} unique cities")
+        if not cities:
+            logger.warning("No cities available in the database")
+            return jsonify({"error": "No cities available in the database."})
+
+        # Fetch the latest data for all cities
+        logger.info("Fetching latest data for all cities")
+        stmt = select(CityData).where(CityData.city.in_(cities))
         with engine.connect() as connection:
             result = connection.execute(stmt)
             latest_data = pd.DataFrame(result.fetchall(), columns=result.keys())
 
+        logger.info(f"Fetched {len(latest_data)} rows of data")
+        if latest_data.empty:
+            logger.warning("No data available in the database")
+            return jsonify({"error": "No data available in the database."})
+
+        # Group by city and get the latest date for each city
+        logger.info("Filtering for latest data per city")
+        latest_data = latest_data.loc[latest_data.groupby('city')['date'].idxmax()]
+        logger.info(f"After filtering, {len(latest_data)} rows remain")
+
         # Prepare data for prediction
+        logger.info("Engineering features")
         latest_data = engineer_features(latest_data)
-        graph_data, _ = create_graph(latest_data)
+        logger.info(f"After feature engineering, shape of data: {latest_data.shape}")
+        
+        if latest_data.empty:
+            logger.error("Data became empty after feature engineering")
+            return jsonify({"error": "Data became empty after feature engineering"})
+
+        try:
+            logger.info("Creating graph")
+            graph_data, _ = create_graph(latest_data)
+            logger.info(f"Graph created with {graph_data.num_nodes} nodes and {graph_data.num_edges} edges")
+        except ValueError as e:
+            logger.error(f"Error creating graph: {str(e)}")
+            return jsonify({"error": f"Error creating graph: {str(e)}"})
 
         # Make predictions
+        logger.info("Making predictions")
         model.eval()
         with torch.no_grad():
             predictions = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr).cpu().numpy()
+        logger.info(f"Made {len(predictions)} predictions")
 
         # Define risk thresholds
         thresholds = {
@@ -367,9 +419,14 @@ def get_risk_data():
         }
 
         # Prepare risk data
+        logger.info("Preparing risk data")
         risk_data = []
-        for i, city in enumerate(city_names):
-            city_data = latest_data[latest_data['city'] == city].iloc[0]
+        for i, city in enumerate(cities):
+            city_data = latest_data[latest_data['city'] == city]
+            if city_data.empty:
+                logger.warning(f"No data for city {city}")
+                continue  # Skip this city if we have no data for it
+            city_data = city_data.iloc[0]
             
             # Determine risk level
             if predictions[i] > thresholds['high_risk']:
@@ -379,40 +436,22 @@ def get_risk_data():
             else:
                 risk_level = "Low"
             
-            # Find neighboring cities with elevated risk
-            neighboring_cities = []
-            for edge in graph_data.edge_index.t():
-                if edge[0] == i:
-                    neighbor_index = edge[1].item()
-                    if predictions[neighbor_index] > thresholds['moderate_risk']:
-                        neighboring_cities.append(city_names[neighbor_index])
-            
-            # Prepare feature dictionary for explanation
-            feature_dict = {
-                'rainfall': float(city_data['rainfall']),
-                'temperature': float(city_data['temperature']),
-                'population': int(city_data['population'])
-            }
-            
-            # Generate explanation
-            explanation = generate_explanation(city, float(predictions[i]), feature_dict, thresholds, neighboring_cities)
-            
             risk_data.append({
                 "city": city,
                 "prediction": float(predictions[i]),
                 "risk_level": risk_level,
                 "temperature": float(city_data['temperature']),
                 "rainfall": float(city_data['rainfall']),
-                "population": int(city_data['population']),
-                "explanation": explanation,
-                "neighboring_cities": neighboring_cities
+                "population": int(city_data['population'])
             })
 
+        logger.info(f"Prepared risk data for {len(risk_data)} cities")
         return jsonify(risk_data)
 
     except Exception as e:
-        print(f"Error in get_risk_data: {str(e)}")
+        logger.error(f"Error in get_risk_data: {str(e)}", exc_info=True)
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+
 
 @app.route('/get_cities', methods=['GET'])
 def get_cities():
