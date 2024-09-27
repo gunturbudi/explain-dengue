@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-
 {% block title %}ExplainDengue - Data Management{% endblock %}
-
 {% block content %}
 <h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Data Management</h1>
-
 <div class="bg-white p-6 rounded-lg shadow-md mb-8">
     <h2 class="text-2xl font-semibold mb-4">Generate Fictional Data</h2>
-    <button id="generateDataButton" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Generate Data</button>
+    <div class="flex space-x-4">
+        <button id="generateDataButton" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Generate Data</button>
+        <button id="resetDataButton" class="bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600">Reset Data</button>
+    </div>
     <p id="dataStatus" class="mt-4"></p>
     <div id="dataProgress" class="mt-4 hidden">
         <div class="animate-pulse flex space-x-4">
@@ -21,9 +21,16 @@
         </div>
     </div>
 </div>
-
+<div class="bg-white p-6 rounded-lg shadow-md mb-8">
+    <h2 class="text-2xl font-semibold mb-4">Filter Data</h2>
+    <form id="filterForm" class="flex space-x-4">
+        <input type="text" name="city" placeholder="Filter by city" value="{{ request.args.get('city', '') }}" class="border rounded px-3 py-2 w-1/3">
+        <input type="date" name="date" value="{{ request.args.get('date', '') }}" class="border rounded px-3 py-2 w-1/3">
+        <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Filter</button>
+    </form>
+</div>
 <div class="bg-white p-6 rounded-lg shadow-md">
-    <h2 class="text-2xl font-semibold mb-4">Sample Data</h2>
+    <h2 class="text-2xl font-semibold mb-4">Data Table</h2>
     <div class="overflow-x-auto">
         <table class="min-w-full bg-white">
             <thead class="bg-gray-800 text-white">
@@ -37,7 +44,7 @@
                 </tr>
             </thead>
             <tbody class="text-gray-700">
-                {% for record in sample_data %}
+                {% for record in data %}
                 <tr>
                     <td class="py-3 px-4">{{ record.city }}</td>
                     <td class="py-3 px-4">{{ record.date }}</td>
@@ -50,31 +57,68 @@
             </tbody>
         </table>
     </div>
+    <div class="mt-4 flex justify-center">
+        <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+            {% if pagination.has_prev %}
+                <a href="{{ url_for('data_management', page=pagination.prev_num, city=request.args.get('city', ''), date=request.args.get('date', '')) }}" class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">Previous</a>
+            {% endif %}
+            {% for page in pagination.iter_pages() %}
+                {% if page %}
+                    {% if page != pagination.page %}
+                        <a href="{{ url_for('data_management', page=page, city=request.args.get('city', ''), date=request.args.get('date', '')) }}" class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50">{{ page }}</a>
+                    {% else %}
+                        <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-blue-50 text-sm font-medium text-blue-600">{{ page }}</span>
+                    {% endif %}
+                {% else %}
+                    <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700">...</span>
+                {% endif %}
+            {% endfor %}
+            {% if pagination.has_next %}
+                <a href="{{ url_for('data_management', page=pagination.next_num, city=request.args.get('city', ''), date=request.args.get('date', '')) }}" class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">Next</a>
+            {% endif %}
+        </nav>
+    </div>
 </div>
 {% endblock %}
-
 {% block scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const generateDataButton = document.getElementById('generateDataButton');
+    const resetDataButton = document.getElementById('resetDataButton');
     const dataStatus = document.getElementById('dataStatus');
     const dataProgress = document.getElementById('dataProgress');
 
-    generateDataButton.addEventListener('click', async () => {
-        dataStatus.textContent = 'Generating data...';
-        generateDataButton.disabled = true;
+    async function handleDataOperation(url, buttonElement) {
+        dataStatus.textContent = 'Processing...';
+        buttonElement.disabled = true;
         dataProgress.classList.remove('hidden');
-        
-        const response = await fetch('/generate_data', { method: 'POST' });
-        const data = await response.json();
-        
-        dataProgress.classList.add('hidden');
-        dataStatus.textContent = data.message;
-        
-        if (data.message.includes("successfully")) {
-            location.reload(); // Reload the page to show the new data
-        } else {
-            generateDataButton.disabled = false;
+       
+        try {
+            const response = await fetch(url, { method: 'POST' });
+            const data = await response.json();
+           
+            dataProgress.classList.add('hidden');
+            dataStatus.textContent = data.message;
+           
+            if (response.ok) {
+                location.reload();
+            } else {
+                throw new Error(data.error || 'Unknown error occurred');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            dataStatus.textContent = `Error: ${error.message}`;
+            dataProgress.classList.add('hidden');
+        } finally {
+            buttonElement.disabled = false;
+        }
+    }
+
+    generateDataButton.addEventListener('click', () => handleDataOperation('/generate_data', generateDataButton));
+
+    resetDataButton.addEventListener('click', () => {
+        if (confirm('Are you sure you want to reset the data? This will delete all existing data and generate new data.')) {
+            handleDataOperation('/reset_data', resetDataButton);
         }
     });
 });

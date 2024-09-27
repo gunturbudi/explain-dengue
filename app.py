@@ -8,10 +8,13 @@ import io
 import base64
 from sqlalchemy import select, create_engine
 import os
+from geopy.distance import geodesic
+from flask_migrate import Migrate
 
 from models import db, CityData
 
 app = Flask(__name__)
+migrate = Migrate(app, db)
 
 # Specify the absolute path for the database
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -36,6 +39,7 @@ from dengue_model import (
 
 # Global variables to store the model and data
 model = None
+model_status = "Not trained"
 graph_data = None
 feature_scaler = None
 city_names = []
@@ -48,6 +52,7 @@ def initialize_database():
         db.create_all()
         global city_names
         city_names = [city[0] for city in db.session.query(CityData.city).distinct()]
+
 
 @app.route('/')
 def index():
@@ -69,15 +74,61 @@ def dashboard():
 
 @app.route('/data')
 def data_management():
-    with app.app_context():
-        sample_data = CityData.query.limit(10).all()
-    return render_template('data_management.html', sample_data=sample_data)
+    page = request.args.get('page', 1, type=int)
+    per_page = 10  # You can adjust this number
+    city_filter = request.args.get('city', '')
+    date_filter = request.args.get('date', '')
+
+    query = CityData.query
+
+    if city_filter:
+        query = query.filter(CityData.city.ilike(f'%{city_filter}%'))
+    if date_filter:
+        query = query.filter(CityData.date == date_filter)
+
+    pagination = query.order_by(CityData.date.desc()).paginate(page=page, per_page=per_page, error_out=False)
+    data = pagination.items
+
+    return render_template('data_management.html', 
+                           data=data, 
+                           pagination=pagination,
+                           city_filter=city_filter,
+                           date_filter=date_filter)
+
+@app.route('/reset_data', methods=['POST'])
+def reset_data():
+    try:
+        # Delete all existing data
+        db.session.query(CityData).delete()
+        db.session.commit()
+
+        # Generate new data
+        city_data = generate_fictional_data()
+        
+        for _, row in city_data.iterrows():
+            city_record = CityData(
+                city=row['city'],
+                date=row['date'],
+                temperature=row['temperature'],
+                rainfall=row['rainfall'],
+                population=row['population'],
+                dengue_cases=row['dengue_cases']
+            )
+            db.session.add(city_record)
+        
+        db.session.commit()
+        
+        return jsonify({"message": "Data reset successfully. New data generated and stored in the database."})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
 @app.route('/model')
 def model_management():
     global model
     model_status = "Trained" if model is not None else "Not trained"
     return render_template('model_management.html', model_status=model_status)
+
 
 @app.route('/generate_data', methods=['POST'])
 def generate_data():
@@ -93,7 +144,9 @@ def generate_data():
             temperature=row['temperature'],
             rainfall=row['rainfall'],
             population=row['population'],
-            dengue_cases=row['dengue_cases']
+            dengue_cases=row['dengue_cases'],
+            latitude=row['latitude'],
+            longitude=row['longitude']
         )
         db.session.add(city_record)
     
@@ -106,7 +159,7 @@ def generate_data():
 
 @app.route('/train', methods=['POST'])
 def train():
-    global model, graph_data, feature_scaler, city_names, engine
+    global model, graph_data, feature_scaler, city_names, engine, model_status
     
     stmt = select(CityData)
     with engine.connect() as connection:
@@ -116,7 +169,16 @@ def train():
     if city_data.empty:
         return jsonify({"error": "No data available. Please generate data first."})
     
+    print("Sample of city_data before engineering features:")
+    print(city_data.head())
+    print(city_data.dtypes)
+    
     city_data = engineer_features(city_data)
+    
+    print("Sample of city_data after engineering features:")
+    print(city_data.head())
+    print(city_data.dtypes)
+    
     graph_data, feature_scaler = create_graph(city_data)
     
     train_data, test_data = train_test_split_graph(graph_data, test_size=0.2, random_state=42)
@@ -127,11 +189,13 @@ def train():
     
     city_names = city_data['city'].unique().tolist()
     
+    model_status = "Trained"
+    
     return jsonify({
         "message": "Model trained successfully",
         "performance": {
-            "mse": float(mse),  # Convert to standard Python float
-            "r2": float(r2)     # Convert to standard Python float
+            "mse": float(mse),
+            "r2": float(r2)
         }
     })
 
@@ -161,6 +225,7 @@ def plot():
     
     return jsonify({"plot": plot_data})
 
+
 @app.route('/predict', methods=['POST'])
 def predict():
     global model, graph_data, feature_scaler, city_names
@@ -178,7 +243,7 @@ def predict():
         return jsonify({"error": "Model not trained. Please train the model first."})
     
     with torch.no_grad():
-        prediction = model(graph_data.x, graph_data.edge_index, None)[city_index].item()
+        prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)[city_index].item()
     
     features = graph_data.x[city_index].cpu().numpy()
     feature_dict = {
@@ -195,13 +260,102 @@ def predict():
         'high_population_density': 1000000
     }
     
-    explanation = generate_explanation(city_name, prediction, feature_dict, thresholds)
+    # Find neighboring cities with elevated risk
+    neighboring_cities = []
+    for i, edge in enumerate(graph_data.edge_index.t()):
+        if edge[0] == city_index:
+            neighbor_index = edge[1]
+            neighbor_prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)[neighbor_index].item()
+            if neighbor_prediction > thresholds['moderate_risk']:
+                neighboring_cities.append(city_names[neighbor_index])
     
-    return jsonify({
-        "prediction": prediction,
-        "explanation": explanation
-    })
+    explanation = generate_explanation(city_name, prediction, feature_dict, thresholds, neighboring_cities)
+    
+    return jsonify(explanation)
 
+@app.route('/risk_monitor')
+def risk_monitor():
+    return render_template('risk_monitor.html')
+
+@app.route('/get_risk_data')
+def get_risk_data():
+    global model, graph_data, feature_scaler, city_names, engine
+
+    if model is None:
+        return jsonify({"error": "Model not trained yet."})
+
+    try:
+        # Fetch the latest data for each city
+        stmt = select(CityData).distinct(CityData.city).order_by(CityData.city, CityData.date.desc())
+        with engine.connect() as connection:
+            result = connection.execute(stmt)
+            latest_data = pd.DataFrame(result.fetchall(), columns=result.keys())
+
+        # Prepare data for prediction
+        latest_data = engineer_features(latest_data)
+        graph_data, _ = create_graph(latest_data)
+
+        # Make predictions
+        model.eval()
+        with torch.no_grad():
+            predictions = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr).cpu().numpy()
+
+        # Define risk thresholds
+        thresholds = {
+            'high_risk': 50,
+            'moderate_risk': 20,
+            'heavy_rainfall': 100,
+            'high_temperature': 30,
+            'high_population_density': 1000000
+        }
+
+        # Prepare risk data
+        risk_data = []
+        for i, city in enumerate(city_names):
+            city_data = latest_data[latest_data['city'] == city].iloc[0]
+            
+            # Determine risk level
+            if predictions[i] > thresholds['high_risk']:
+                risk_level = "High"
+            elif predictions[i] > thresholds['moderate_risk']:
+                risk_level = "Moderate"
+            else:
+                risk_level = "Low"
+            
+            # Find neighboring cities with elevated risk
+            neighboring_cities = []
+            for edge in graph_data.edge_index.t():
+                if edge[0] == i:
+                    neighbor_index = edge[1].item()
+                    if predictions[neighbor_index] > thresholds['moderate_risk']:
+                        neighboring_cities.append(city_names[neighbor_index])
+            
+            # Prepare feature dictionary for explanation
+            feature_dict = {
+                'rainfall': float(city_data['rainfall']),
+                'temperature': float(city_data['temperature']),
+                'population': int(city_data['population'])
+            }
+            
+            # Generate explanation
+            explanation = generate_explanation(city, float(predictions[i]), feature_dict, thresholds, neighboring_cities)
+            
+            risk_data.append({
+                "city": city,
+                "prediction": float(predictions[i]),
+                "risk_level": risk_level,
+                "temperature": float(city_data['temperature']),
+                "rainfall": float(city_data['rainfall']),
+                "population": int(city_data['population']),
+                "explanation": explanation,
+                "neighboring_cities": neighboring_cities
+            })
+
+        return jsonify(risk_data)
+
+    except Exception as e:
+        print(f"Error in get_risk_data: {str(e)}")
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
 @app.route('/get_cities', methods=['GET'])
 def get_cities():

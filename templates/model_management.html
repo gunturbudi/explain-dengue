@@ -1,30 +1,15 @@
 {% extends "base.html" %}
-
 {% block title %}ExplainDengue - Model Management{% endblock %}
-
 {% block content %}
 <h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Model Management</h1>
-
 <div class="bg-white p-6 rounded-lg shadow-md mb-8">
     <h2 class="text-2xl font-semibold mb-4">Model Status</h2>
-    <p class="text-lg">Current status: <span class="font-bold {% if model_status == 'Trained' %}text-green-600{% else %}text-red-600{% endif %}">{{ model_status }}</span></p>
+    <p class="text-lg">Current status: <span id="modelStatus" class="font-bold {% if model_status == 'Trained' %}text-green-600{% else %}text-red-600{% endif %}">{{ model_status }}</span></p>
 </div>
-
 <div class="bg-white p-6 rounded-lg shadow-md">
     <h2 class="text-2xl font-semibold mb-4">Train Model</h2>
     <button id="trainButton" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Train Model</button>
     <p id="trainingStatus" class="mt-4"></p>
-    <div id="trainingProgress" class="mt-4 hidden">
-        <div class="animate-pulse flex space-x-4">
-            <div class="flex-1 space-y-4 py-1">
-                <div class="h-4 bg-blue-400 rounded w-3/4"></div>
-                <div class="space-y-2">
-                    <div class="h-4 bg-blue-400 rounded"></div>
-                    <div class="h-4 bg-blue-400 rounded w-5/6"></div>
-                </div>
-            </div>
-        </div>
-    </div>
     <div id="performanceMetrics" class="mt-4 hidden">
         <h3 class="text-xl font-semibold mb-2">Model Performance</h3>
         <p>Mean Squared Error: <span id="mseValue"></span></p>
@@ -32,35 +17,41 @@
     </div>
 </div>
 {% endblock %}
-
 {% block scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const trainButton = document.getElementById('trainButton');
     const trainingStatus = document.getElementById('trainingStatus');
-    const trainingProgress = document.getElementById('trainingProgress');
     const performanceMetrics = document.getElementById('performanceMetrics');
     const mseValue = document.getElementById('mseValue');
     const r2Value = document.getElementById('r2Value');
+    const modelStatus = document.getElementById('modelStatus');
 
     trainButton.addEventListener('click', async () => {
         trainingStatus.textContent = 'Training in progress...';
         trainButton.disabled = true;
-        trainingProgress.classList.remove('hidden');
-        performanceMetrics.classList.add('hidden');
         
-        const response = await fetch('/train', { method: 'POST' });
-        const data = await response.json();
-        
-        trainingProgress.classList.add('hidden');
-        trainingStatus.textContent = data.message;
-        
-        if (data.performance) {
-            mseValue.textContent = data.performance.mse.toFixed(4);
-            r2Value.textContent = data.performance.r2.toFixed(4);
-            performanceMetrics.classList.remove('hidden');
+        try {
+            const response = await fetch('/train', { method: 'POST' });
+            const data = await response.json();
+            
+            trainingStatus.textContent = data.message;
+            
+            if (data.performance) {
+                mseValue.textContent = data.performance.mse.toFixed(4);
+                r2Value.textContent = data.performance.r2.toFixed(4);
+                performanceMetrics.classList.remove('hidden');
+                
+                modelStatus.textContent = 'Trained';
+                modelStatus.classList.remove('text-red-600');
+                modelStatus.classList.add('text-green-600');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            trainingStatus.textContent = 'An error occurred during training.';
+        } finally {
+            trainButton.disabled = false;
         }
-        trainButton.disabled = false;
     });
 });
 </script>

@@ -11,7 +11,8 @@ class CityData(db.Model):
     rainfall = db.Column(db.Float, nullable=False)
     population = db.Column(db.Float, nullable=False)
     dengue_cases = db.Column(db.Integer, nullable=False)
-    # humidty
+    latitude = db.Column(db.Float, nullable=False)  # New column
+    longitude = db.Column(db.Float, nullable=False)  # New column
 
     def __repr__(self):
         return f'<CityData {self.city} {self.date}>'
