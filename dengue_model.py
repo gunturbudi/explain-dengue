@@ -171,10 +171,10 @@ def evaluate_model(model, test_data):
                       out[test_data.test_mask].cpu().numpy())
     return mse, r2
 
-def generate_explanation(city, prediction, features, thresholds, neighboring_cities):
-    rainfall = features['rainfall']
-    temperature = features['temperature']
-    population = features['population']
+def generate_explanation(city_name, prediction, feature_dict, thresholds, neighboring_cities, stats_analysis):
+    rainfall = feature_dict['rainfall']
+    temperature = feature_dict['temperature']
+    population = feature_dict['population']
     
     if prediction > thresholds['high_risk']:
         risk_level = "high"
@@ -190,6 +190,29 @@ def generate_explanation(city, prediction, features, thresholds, neighboring_cit
         factors.append({"name": "Temperature", "value": f"{temperature:.2f}°C", "threshold": f"{thresholds['high_temperature']}°C"})
     if population > thresholds['high_population_density']:
         factors.append({"name": "Population", "value": f"{population:.0f}", "threshold": f"{thresholds['high_population_density']}"})
+    
+    explanation = f"The system predicts a {risk_level} dengue risk in {city_name} with an estimated {prediction:.2f} cases in the next two weeks. "
+    
+    if factors:
+        explanation += "This prediction is based on the following factors: " + ", ".join([f"{factor['name']} ({factor['value']})" for factor in factors]) + ". "
+    else:
+        explanation += "No specific high-risk factors were identified, but vigilance is still recommended. "
+    
+    explanation += f"\n\nStatistical Analysis:\n"
+    explanation += f"- Average dengue cases: {stats_analysis['mean_cases']:.2f} (median: {stats_analysis['median_cases']:.2f})\n"
+    explanation += f"- Case variability: {stats_analysis['std_cases']:.2f} (standard deviation)\n"
+    explanation += f"- Temperature correlation: {stats_analysis['temp_correlation']:.2f} "
+    explanation += f"({'significant' if stats_analysis['temp_correlation_p'] < 0.05 else 'not significant'})\n"
+    explanation += f"- Rainfall correlation: {stats_analysis['rain_correlation']:.2f} "
+    explanation += f"({'significant' if stats_analysis['rain_correlation_p'] < 0.05 else 'not significant'})\n"
+    explanation += f"- Trend: {stats_analysis['trend_direction']} "
+    explanation += f"(from {stats_analysis['trend_start']:.2f} to {stats_analysis['trend_end']:.2f} cases)\n"
+    
+    if stats_analysis['temp_correlation_p'] < 0.05:
+        explanation += f"Temperature shows a significant {'positive' if stats_analysis['temp_correlation'] > 0 else 'negative'} correlation with dengue cases. "
+    if stats_analysis['rain_correlation_p'] < 0.05:
+        explanation += f"Rainfall shows a significant {'positive' if stats_analysis['rain_correlation'] > 0 else 'negative'} correlation with dengue cases. "
+    explanation += f"The overall trend of dengue cases is {stats_analysis['trend_direction'].lower()}. "
     
     recommendations = {
         "high": [
@@ -209,13 +232,24 @@ def generate_explanation(city, prediction, features, thresholds, neighboring_cit
         ]
     }
     
+    explanation += "\nBased on this risk level and statistical analysis, we recommend: "
+    explanation += ", ".join(recommendations[risk_level]) + ". "
+    
+    if stats_analysis['trend_direction'] == 'Increasing':
+        explanation += "Given the increasing trend, consider allocating additional resources for dengue prevention and control. "
+    if stats_analysis['temp_correlation_p'] < 0.05 and stats_analysis['temp_correlation'] > 0:
+        explanation += "With temperature significantly correlated to cases, intensify prevention efforts during warmer periods. "
+    if stats_analysis['rain_correlation_p'] < 0.05 and stats_analysis['rain_correlation'] > 0:
+        explanation += "As rainfall is significantly correlated with cases, increase vigilance and vector control during rainy seasons. "
+    
     neighboring_info = f"Neighboring cities with elevated risk: {', '.join(neighboring_cities)}" if neighboring_cities else "No neighboring cities with elevated risk."
     
     return {
-        "city": city,
+        "city": city_name,
         "prediction": float(prediction),
         "risk_level": risk_level,
         "factors": factors,
         "recommendations": recommendations[risk_level],
+        "explanation": explanation,
         "neighboring_info": neighboring_info
     }
