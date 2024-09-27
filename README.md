@@ -5,35 +5,41 @@ ExplainDengue is an advanced disease outbreak prediction system that uses machin
 ## Features
 
 - Generate fictional dengue outbreak data for multiple cities
-- Train a Graph Neural Network (GNN) model on the generated data
+- Train a Graph Attention Network (GAT) model on the generated data
 - Make predictions for dengue outbreaks in specific cities
-- Provide detailed explanations for predictions, including risk factors and confidence levels
+- Provide detailed explanations for predictions, including risk factors and statistical analysis
 - Visualize historical trends of dengue cases
+- Monitor real-time risk levels across multiple cities
 - User-friendly web interface built with Flask and Tailwind CSS
 
 ## Prerequisites
 
 - Python 3.9 or higher
-- Conda (for environment management)
+- pip (for package management)
 
 ## Installation
 
 1. Clone the repository:
    ```
-   git clone https://github.com/gunturbudi/explain-dengue.git
+   git clone https://github.com/yourusername/explain-dengue.git
    cd explain-dengue
    ```
 
-2. Create and activate the conda environment:
+2. Install the required packages:
    ```
-   conda env create -f environment.yml
-   conda activate explain-dengue
+   pip install -r requirements.txt
    ```
 
 ## Running the Application
 
+1. Initialize the database:
+   ```
+   flask db init
+   flask db migrate
+   flask db upgrade
+   ```
 
-1. Run the Flask application:
+2. Run the Flask application:
    ```
    python app.py
    ```
@@ -48,7 +54,7 @@ ExplainDengue is an advanced disease outbreak prediction system that uses machin
 
 2. Model Training:
    - Go to the "Model Management" page
-   - Click the "Train Model" button to train the GNN on the generated data
+   - Click the "Train Model" button to train the GAT model on the generated data
 
 3. Making Predictions:
    - Visit the "Dashboard" page
@@ -57,8 +63,11 @@ ExplainDengue is an advanced disease outbreak prediction system that uses machin
 
 4. Viewing Results:
    - The prediction result, along with a detailed explanation, will be displayed on the Dashboard
-   - The explanation includes risk factors, confidence levels, and recommended actions
+   - The explanation includes risk factors, statistical analysis, and recommended actions
    - A plot showing the historical trend of dengue cases is also available on the Dashboard
+
+5. Risk Monitoring:
+   - Visit the "Risk Monitor" page to see real-time risk levels across all cities
 
 ## Project Structure
 
@@ -66,7 +75,6 @@ ExplainDengue is an advanced disease outbreak prediction system that uses machin
 - `models.py`: Database models
 - `dengue_model.py`: Machine learning model and related functions
 - `templates/`: HTML templates for the web interface
-- `environment.yml`: Conda environment configuration
 - `requirements.txt`: Python package dependencies
 
 ## Contributing

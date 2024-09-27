@@ -1,8 +1,12 @@
 Flask
 Flask-SQLAlchemy
+Flask-Migrate
 pandas
 numpy
 torch
 torch-geometric
 scikit-learn
 matplotlib
+geopy
+statsmodels
+scipy
