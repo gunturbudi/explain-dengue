@@ -2,30 +2,55 @@
 {% block title %}ExplainDengue - Risk Monitor Dashboard{% endblock %}
 {% block content %}
 
-<h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Risk Monitor Dashboard</h1>
+<div class="container mx-auto px-4 py-8 bg-gray-100 min-h-screen">
+    <h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Dengue Risk Monitor</h1>
 
-<div id="errorMessage" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4 hidden" role="alert">
-    <span id="errorText" class="block sm:inline"></span>
-</div>
+    <div id="errorMessage" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4 hidden" role="alert">
+        <span id="errorText" class="block sm:inline"></span>
+    </div>
 
-<div class="mb-4">
-    <input type="text" id="citySearch" placeholder="Search for a city" class="w-full p-2 border rounded">
-</div>
-
-<div id="cityGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-    <!-- City cards will be dynamically inserted here -->
-</div>
-
-<!-- Modal for detailed city view -->
-<div id="cityModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden">
-    <div class="relative top-20 mx-auto p-5 border w-11/12 md:w-3/4 lg:w-2/3 shadow-lg rounded-md bg-white">
-        <div id="modalContent" class="max-h-[80vh] overflow-y-auto">
-            <!-- Detailed city information will be inserted here -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Risk Distribution</h2>
+            <canvas id="riskDistributionChart"></canvas>
         </div>
-        <div class="text-center mt-4">
-            <button id="closeModal" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-300">
-                Close
-            </button>
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Average Temperature</h2>
+            <canvas id="temperatureChart"></canvas>
+        </div>
+        <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Average Rainfall</h2>
+            <canvas id="rainfallChart"></canvas>
+        </div>
+    </div>
+
+    <div class="mb-6 flex justify-between items-center">
+        <input type="text" id="citySearch" placeholder="Search for a city..." class="w-1/3 p-2 border rounded-md">
+        <div>
+            <label for="riskFilter" class="mr-2">Filter by risk:</label>
+            <select id="riskFilter" class="p-2 border rounded-md">
+                <option value="all">All</option>
+                <option value="high">High</option>
+                <option value="moderate">Moderate</option>
+                <option value="low">Low</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="cityGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- City cards will be dynamically inserted here -->
+    </div>
+
+    <div id="cityModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden z-50">
+        <div class="relative top-20 mx-auto p-5 border w-11/12 md:w-3/4 lg:w-2/3 shadow-lg rounded-md bg-white">
+            <div id="modalContent" class="max-h-[80vh] overflow-y-auto">
+                <!-- Detailed city information will be inserted here -->
+            </div>
+            <div class="text-center mt-4">
+                <button onclick="closeModal()" class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md shadow-sm hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-300">
+                    Close
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -35,378 +60,238 @@
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
+let globalCityData = []; // Renamed from cityData to globalCityData
+
 document.addEventListener('DOMContentLoaded', function() {
-    const cityGrid = document.getElementById('cityGrid');
-    const cityModal = document.getElementById('cityModal');
-    const modalContent = document.getElementById('modalContent');
-    const closeModal = document.getElementById('closeModal');
-    const citySearch = document.getElementById('citySearch');
-
-    function fetchRiskData() {
-        fetch('/get_risk_data')
-            .then(response => response.json())
-            .then(data => {
-                cityGrid.innerHTML = '';
-                data.forEach(city => {
-                    const card = createCityCard(city);
-                    cityGrid.appendChild(card);
-                });
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                document.getElementById('errorMessage').classList.remove('hidden');
-                document.getElementById('errorText').textContent = 'Failed to fetch risk data. Please try again later.';
-            });
-    }
-
-    function createCityCard(city) {
-        const card = document.createElement('div');
-        card.className = 'bg-white p-4 rounded-lg shadow-md cursor-pointer hover:shadow-lg transition-shadow duration-300';
-        card.innerHTML = `
-            <h2 class="text-xl font-semibold mb-2">${city.city}</h2>
-            <p class="mb-2">Risk Level: <span class="font-bold ${getRiskColor(city.risk_level)}">${city.risk_level}</span></p>
-            <p class="mb-2">
-                ${getWeatherIcon(city.temperature, city.rainfall)}
-                ${city.temperature.toFixed(1)}°C / ${city.rainfall.toFixed(1)}mm
-            </p>
-            <p>Population: ${city.population.toLocaleString()}</p>
-        `;
-        card.addEventListener('click', () => showCityDetails(city));
-        return card;
-    }
-
-    function getRiskColor(riskLevel) {
-        switch (riskLevel) {
-            case 'High': return 'text-red-600';
-            case 'Moderate': return 'text-yellow-600';
-            case 'Low': return 'text-green-600';
-            default: return 'text-gray-600';
-        }
-    }
-
-    function getWeatherIcon(temperature, rainfall) {
-        if (temperature > 30) {
-            return '🌞';
-        } else if (rainfall > 100) {
-            return '🌧️';
-        } else {
-            return '⛅';
-        }
-    }
-
-    function showCityDetails(city) {
-        modalContent.innerHTML = `
-            <h2 class="text-2xl font-bold mb-4">${city.city} - Detailed View</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div class="bg-gray-100 p-4 rounded-lg">
-                    <h3 class="text-xl font-semibold mb-2">Risk Level</h3>
-                    <div class="h-40">
-                        <canvas id="riskGauge"></canvas>
-                    </div>
-                </div>
-                <div class="bg-gray-100 p-4 rounded-lg">
-                    <h3 class="text-xl font-semibold mb-2">Predicted Cases</h3>
-                    <div class="h-40">
-                        <canvas id="casesChart"></canvas>
-                    </div>
-                </div>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                <div class="bg-gray-100 p-4 rounded-lg text-center">
-                    <h3 class="text-lg font-semibold mb-2">Temperature</h3>
-                    <div class="h-32">
-                        <canvas id="tempGauge"></canvas>
-                    </div>
-                </div>
-                <div class="bg-gray-100 p-4 rounded-lg text-center">
-                    <h3 class="text-lg font-semibold mb-2">Rainfall</h3>
-                    <div class="h-32">
-                        <canvas id="rainfallChart"></canvas>
-                    </div>
-                </div>
-                <div class="bg-gray-100 p-4 rounded-lg text-center">
-                    <h3 class="text-lg font-semibold mb-2">Population</h3>
-                    <p class="text-3xl font-bold">${city.population.toLocaleString()}</p>
-                </div>
-            </div>
-            
-            <h3 class="text-xl font-semibold mb-2">Explanation</h3>
-            <div id="explanation" class="mb-4 p-3 bg-gray-100 rounded">
-                ${generateExplanation(city)}
-            </div>
-            
-            <h3 class="text-xl font-semibold mb-2">Neighboring Cities with Elevated Risk</h3>
-            <div id="neighboringCities" class="mb-4 p-3 bg-gray-100 rounded">
-                ${generateNeighboringCitiesInfo(city)}
-            </div>
-            
-            <h3 class="text-xl font-semibold mb-2">Recommendations</h3>
-            <ul id="recommendations" class="mb-4 list-disc pl-5">
-                ${generateRecommendations(city)}
-            </ul>
-        `;
-        cityModal.classList.remove('hidden');
-        
-        // Create visualizations
-        createRiskGauge(city.risk_level);
-        createCasesChart(city.prediction);
-        createTempGauge(city.temperature);
-        createRainfallChart(city.rainfall);
-    }
-
-    function createRiskGauge(riskLevel) {
-        const ctx = document.getElementById('riskGauge').getContext('2d');
-        const riskValues = { 'Low': 1, 'Moderate': 2, 'High': 3 };
-        const value = riskValues[riskLevel];
-        
-        const chart = new Chart(ctx, {
-            type: 'doughnut',
-            data: {
-                datasets: [{
-                    data: [value, 3 - value],
-                    backgroundColor: [
-                        value === 1 ? '#4CAF50' : value === 2 ? '#FFC107' : '#F44336',
-                        'rgba(0, 0, 0, 0.1)'
-                    ],
-                    borderWidth: 0
-                }]
-            },
-            options: {
-                circumference: 180,
-                rotation: -90,
-                cutout: '70%',
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: { enabled: false }
-                }
-            },
-            plugins: [{
-                id: 'riskText',
-                afterDraw: (chart, args, options) => {
-                    const {ctx, chartArea: {top, right, bottom, left, width, height}} = chart;
-                    ctx.save();
-                    
-                    const centerX = left + width / 2;
-                    const centerY = top + height / 2;
-                    
-                    // Risk Level
-                    ctx.font = 'bold 16px Arial';
-                    ctx.fillStyle = value === 1 ? '#4CAF50' : value === 2 ? '#FFC107' : '#F44336';
-                    ctx.fillText(riskLevel, centerX, centerY + 15);
-                    
-                    // Numerical Value
-                    ctx.font = 'bold 24px Arial';
-                    ctx.fillText(value.toString(), centerX, centerY - 15);
-                    
-                    ctx.restore();
-                }
-            }]
-        });
-    }
-
-    function createTempGauge(temperature) {
-        const ctx = document.getElementById('tempGauge').getContext('2d');
-        const maxTemp = 50;
-        
-        const chart = new Chart(ctx, {
-            type: 'doughnut',
-            data: {
-                datasets: [{
-                    data: [temperature, maxTemp - temperature],
-                    backgroundColor: [
-                        temperature > 30 ? '#F44336' : temperature > 20 ? '#FFC107' : '#4CAF50',
-                        'rgba(0, 0, 0, 0.1)'
-                    ],
-                    borderWidth: 0
-                }]
-            },
-            options: {
-                circumference: 180,
-                rotation: -90,
-                cutout: '70%',
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: { enabled: false }
-                }
-            },
-            plugins: [{
-                id: 'tempText',
-                afterDraw: (chart, args, options) => {
-                    const {ctx, chartArea: {top, right, bottom, left, width, height}} = chart;
-                    ctx.save();
-                    
-                    const centerX = left + width / 2;
-                    const centerY = top + height / 2;
-                    
-                    // Temperature Value
-                    ctx.font = 'bold 20px Arial';
-                    ctx.fillStyle = '#000';
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(temperature.toFixed(1) + '°C', centerX, centerY - 10);
-                    
-                    // Label
-                    ctx.font = '14px Arial';
-                    ctx.fillText('Temperature', centerX, centerY + 20);
-                    
-                    ctx.restore();
-                }
-            }]
-        });
-    }
-
-    function createCasesChart(prediction) {
-        const ctx = document.getElementById('casesChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: ['Predicted Cases'],
-                datasets: [{
-                    data: [prediction],
-                    backgroundColor: 'rgba(54, 162, 235, 0.6)',
-                    borderColor: 'rgba(54, 162, 235, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        beginAtZero: true
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: false
-                    }
-                }
-            }
-        });
-    }
-
-    function createRainfallChart(rainfall) {
-        const ctx = document.getElementById('rainfallChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: ['Rainfall'],
-                datasets: [{
-                    data: [rainfall],
-                    backgroundColor: 'rgba(54, 162, 235, 0.6)',
-                    borderColor: 'rgba(54, 162, 235, 1)',
-                    borderWidth: 1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        title: {
-                            display: true,
-                            text: 'mm'
-                        }
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: false
-                    }
-                }
-            }
-        });
-    }
-
-    function generateExplanation(city) {
-        let explanation = `The risk level for ${city.city} is currently <strong>${city.risk_level}</strong>. `;
-        
-        explanation += `Based on our graph-based model, which considers the interconnectedness of cities, `;
-        
-        if (city.temperature > 30) {
-            explanation += `the high temperature of ${city.temperature.toFixed(1)}°C provides favorable conditions for mosquito breeding. `;
-        }
-        
-        if (city.rainfall > 100) {
-            explanation += `The heavy rainfall of ${city.rainfall.toFixed(1)}mm increases the likelihood of standing water, which are ideal breeding sites for mosquitoes. `;
-        }
-        
-        if (city.population > 1000000) {
-            explanation += `The large population of ${city.population.toLocaleString()} increases the potential for rapid disease spread. `;
-        }
-        
-        explanation += `Our model also considers the situation in neighboring cities, as dengue outbreaks can spread across regions. `;
-        explanation += `Based on these factors and the network effects, our model predicts approximately ${city.prediction.toFixed(2)} dengue cases in the near future.`;
-        
-        return explanation;
-    }
-
-    function generateNeighboringCitiesInfo(city) {
-        if (!city.neighboring_cities || city.neighboring_cities.length === 0) {
-            return "No neighboring cities currently show elevated risk.";
-        }
-        
-        let info = "The following neighboring cities show elevated risk levels:<ul>";
-        city.neighboring_cities.forEach(neighbor => {
-            info += `<li>${neighbor.name} (Risk Level: ${neighbor.risk_level})</li>`;
-        });
-        info += "</ul>";
-        
-        return info;
-    }
-
-    function generateRecommendations(city) {
-        const baseRecommendations = {
-            'High': [
-                "Intensify vector control measures in high-risk areas",
-                "Conduct emergency community awareness campaigns",
-                "Ensure hospitals are prepared for a potential outbreak",
-                "Implement daily monitoring of reported dengue cases"
-            ],
-            'Moderate': [
-                "Continue regular mosquito control activities",
-                "Encourage community participation in eliminating mosquito breeding sites",
-                "Monitor local health facilities for increased dengue cases",
-                "Conduct targeted awareness campaigns in vulnerable areas"
-            ],
-            'Low': [
-                "Maintain routine surveillance and mosquito control measures",
-                "Educate the public on personal protection measures",
-                "Keep emergency response plans updated",
-                "Continue monitoring weather patterns and population dynamics"
-            ]
-        };
-
-        let recommendations = baseRecommendations[city.risk_level];
-        
-        // Add network-based recommendations
-        if (city.neighboring_cities && city.neighboring_cities.length > 0) {
-            recommendations.push("Coordinate prevention efforts with neighboring high-risk cities");
-            recommendations.push("Monitor travel patterns between your city and high-risk neighboring cities");
-        }
-
-        return recommendations.map(rec => `<li>${rec}</li>`).join('');
-    }
-
-
-    closeModal.addEventListener('click', () => {
-        cityModal.classList.add('hidden');
-    });
-
-    citySearch.addEventListener('input', (e) => {
-        const searchTerm = e.target.value.toLowerCase();
-        Array.from(cityGrid.children).forEach(card => {
-            const cityName = card.querySelector('h2').textContent.toLowerCase();
-            card.style.display = cityName.includes(searchTerm) ? '' : 'none';
-        });
-    });
-
     fetchRiskData();
+    
+    document.getElementById('citySearch').addEventListener('input', function() {
+        filterCities();
+    });
+
+    document.getElementById('riskFilter').addEventListener('change', function() {
+        filterCities();
+    });
 });
+
+function fetchRiskData() {
+    fetch('/get_risk_data')
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                showError(data.error);
+            } else {
+                globalCityData = data.cities; // Updated to use globalCityData
+                renderCityGrid(globalCityData);
+                updateDashboardCharts(data);
+            }
+        })
+        .catch(error => {
+            showError('Failed to fetch risk data. Please try again later.');
+            console.error('Error:', error);
+        });
+}
+
+function renderCityGrid(data) {
+    const cityGrid = document.getElementById('cityGrid');
+    cityGrid.innerHTML = '';
+    
+    data.forEach(city => {
+        const card = document.createElement('div');
+        card.className = `p-6 rounded-lg shadow-md ${getRiskColorClass(city.risk_level)}`;
+        card.innerHTML = `
+            <h2 class="text-2xl font-bold mb-2">${city.city}</h2>
+            <p class="text-lg mb-2">Risk Level: <span class="font-semibold">${city.risk_level}</span></p>
+            <p class="mb-4">Predicted Cases: <span class="font-semibold">${city.prediction !== null ? city.prediction.toFixed(2) : 'N/A'}</span></p>
+            <div class="flex justify-between items-center">
+                <div>
+                    <p><i class="fas fa-thermometer-half mr-2"></i>${city.temperature !== null ? city.temperature.toFixed(1) + '°C' : 'N/A'}</p>
+                    <p><i class="fas fa-tint mr-2"></i>${city.rainfall !== null ? city.rainfall.toFixed(1) + ' mm' : 'N/A'}</p>
+                </div>
+                <button onclick="showCityDetails('${city.city}')" class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition duration-300">
+                    View Details
+                </button>
+            </div>
+        `;
+        cityGrid.appendChild(card);
+    });
+}
+
+function showCityDetails(cityName) {
+    const cityData = globalCityData.find(city => city.city === cityName); // Updated to use globalCityData
+    if (cityData) {
+        renderCityModal(cityData);
+    } else {
+        showError('City data not found.');
+    }
+}
+
+function getRiskColorClass(riskLevel) {
+    switch (riskLevel.toLowerCase()) {
+        case 'high':
+            return 'bg-red-100 border-l-4 border-red-500';
+        case 'moderate':
+            return 'bg-yellow-100 border-l-4 border-yellow-500';
+        case 'low':
+            return 'bg-green-100 border-l-4 border-green-500';
+        default:
+            return 'bg-gray-100 border-l-4 border-gray-500';
+    }
+}
+
+function renderCityModal(cityData) {
+    const modalContent = document.getElementById('modalContent');
+    modalContent.innerHTML = `
+        <h2 class="text-3xl font-bold mb-4 ${getRiskTextColor(cityData.risk_level)}">${cityData.city}</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <div>
+                <p class="text-xl mb-2"><strong>Risk Level:</strong> <span class="${getRiskTextColor(cityData.risk_level)}">${cityData.risk_level}</span></p>
+                <p class="text-xl mb-2"><strong>Predicted Cases:</strong> ${cityData.prediction !== null ? cityData.prediction.toFixed(2) : 'N/A'}</p>
+                <p class="mb-2"><strong>Temperature:</strong> ${cityData.temperature !== null ? cityData.temperature.toFixed(2) + '°C' : 'N/A'}</p>
+                <p class="mb-2"><strong>Rainfall:</strong> ${cityData.rainfall !== null ? cityData.rainfall.toFixed(2) + ' mm' : 'N/A'}</p>
+            </div>
+            <div>
+                <p class="mb-2"><strong>NDVI:</strong> ${cityData.ndvi !== null ? cityData.ndvi.toFixed(2) : 'N/A'}</p>
+                <p class="mb-2"><strong>Relative Humidity:</strong> ${cityData.relative_humidity !== null ? cityData.relative_humidity.toFixed(2) + '%' : 'N/A'}</p>
+                <p class="mb-2"><strong>Cropland Area:</strong> ${cityData.pct_area_cropland !== null ? cityData.pct_area_cropland.toFixed(2) + '%' : 'N/A'}</p>
+                <p class="mb-2"><strong>Flood Hazard Area:</strong> ${cityData.pct_area_flood_hazard !== null ? cityData.pct_area_flood_hazard.toFixed(2) + '%' : 'N/A'}</p>
+            </div>
+        </div>
+        <h3 class="text-2xl font-bold mt-6 mb-3">Risk Factors:</h3>
+        <ul class="list-disc pl-5 mb-4 text-lg">
+            ${cityData.risk_factors.map(factor => `<li class="mb-1">${factor}</li>`).join('')}
+        </ul>
+    `;
+    document.getElementById('cityModal').classList.remove('hidden');
+}
+
+function getRiskTextColor(riskLevel) {
+    switch (riskLevel.toLowerCase()) {
+        case 'high':
+            return 'text-red-600';
+        case 'moderate':
+            return 'text-yellow-600';
+        case 'low':
+            return 'text-green-600';
+        default:
+            return 'text-gray-600';
+    }
+}
+
+function closeModal() {
+    document.getElementById('cityModal').classList.add('hidden');
+}
+
+function filterCities() {
+    const searchTerm = document.getElementById('citySearch').value.toLowerCase();
+    const riskFilter = document.getElementById('riskFilter').value;
+    
+    const filteredData = globalCityData.filter(city => { // Updated to use globalCityData
+        const nameMatch = city.city.toLowerCase().includes(searchTerm);
+        const riskMatch = riskFilter === 'all' || city.risk_level.toLowerCase() === riskFilter;
+        return nameMatch && riskMatch;
+    });
+    
+    renderCityGrid(filteredData);
+}
+
+function showError(message) {
+    const errorMessage = document.getElementById('errorMessage');
+    const errorText = document.getElementById('errorText');
+    errorText.textContent = message;
+    errorMessage.classList.remove('hidden');
+}
+
+function updateDashboardCharts(data) {
+    updateRiskDistributionChart(data.risk_distribution);
+    updateTemperatureChart(data.avg_temperature);
+    updateRainfallChart(data.avg_rainfall);
+}
+
+function updateRiskDistributionChart(riskDistribution) {
+    const ctx = document.getElementById('riskDistributionChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: Object.keys(riskDistribution),
+            datasets: [{
+                data: Object.values(riskDistribution),
+                backgroundColor: ['#FCA5A5', '#FDE68A', '#BBF7D0'],
+                borderColor: ['#DC2626', '#D97706', '#22C55E'],
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                }
+            }
+        }
+    });
+}
+
+function updateTemperatureChart(avgTemperature) {
+    const ctx = document.getElementById('temperatureChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Average Temperature'],
+            datasets: [{
+                label: 'Temperature (°C)',
+                data: [avgTemperature],
+                backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                borderColor: 'rgb(255, 99, 132)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    max: 40
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                }
+            }
+        }
+    });
+}
+
+function updateRainfallChart(avgRainfall) {
+    const ctx = document.getElementById('rainfallChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Average Rainfall'],
+            datasets: [{
+                label: 'Rainfall (mm)',
+                data: [avgRainfall],
+                backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                borderColor: 'rgb(54, 162, 235)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    max: 200
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                }
+            }
+        }
+    });
+}
 </script>
 {% endblock %}

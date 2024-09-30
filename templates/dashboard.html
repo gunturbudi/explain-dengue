@@ -1,163 +1,142 @@
 {% extends "base.html" %}
-
 {% block title %}ExplainDengue - Dashboard{% endblock %}
-
 {% block content %}
+
 <h1 class="text-4xl font-bold mb-8 text-center text-blue-600">Dengue Outbreak Dashboard</h1>
 
 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
     <div class="bg-white p-4 rounded-lg shadow-md">
         <h2 class="text-xl font-semibold mb-2">Total Cities</h2>
-        <p class="text-3xl font-bold text-blue-600">{{ total_cities }}</p>
+        <p class="text-3xl font-bold">{{ total_cities }}</p>
     </div>
     <div class="bg-white p-4 rounded-lg shadow-md">
         <h2 class="text-xl font-semibold mb-2">Total Cases</h2>
-        <p class="text-3xl font-bold text-red-600">{{ total_cases }}</p>
+        <p class="text-3xl font-bold">{{ total_cases }}</p>
     </div>
     <div class="bg-white p-4 rounded-lg shadow-md">
         <h2 class="text-xl font-semibold mb-2">Avg Temperature</h2>
-        <p class="text-3xl font-bold text-orange-600">{{ "%.2f"|format(avg_temperature) }}°C</p>
+        <p class="text-3xl font-bold">{{ "%.2f"|format(avg_temperature) }}°C</p>
     </div>
     <div class="bg-white p-4 rounded-lg shadow-md">
         <h2 class="text-xl font-semibold mb-2">Avg Rainfall</h2>
-        <p class="text-3xl font-bold text-green-600">{{ "%.2f"|format(avg_rainfall) }} mm</p>
+        <p class="text-3xl font-bold">{{ "%.2f"|format(avg_rainfall) }} mm</p>
     </div>
 </div>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
     <div class="bg-white p-6 rounded-lg shadow-md">
-        <h2 class="text-2xl font-semibold mb-4">Outbreak Prediction</h2>
-        <select id="citySelect" class="w-full p-2 border rounded mb-4">
-            <option value="">Select a city</option>
-        </select>
-        <button id="predictButton" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Predict</button>
-        <div id="predictionResult" class="mt-4"></div>
-        <div id="predictionProgress" class="mt-4 hidden">
-            <div class="animate-pulse flex space-x-4">
-                <div class="flex-1 space-y-4 py-1">
-                    <div class="h-4 bg-blue-400 rounded w-3/4"></div>
-                    <div class="space-y-2">
-                        <div class="h-4 bg-blue-400 rounded"></div>
-                        <div class="h-4 bg-blue-400 rounded w-5/6"></div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        <h2 class="text-2xl font-semibold mb-4">Risk Distribution</h2>
+        <canvas id="riskDistributionChart"></canvas>
     </div>
-    
     <div class="bg-white p-6 rounded-lg shadow-md">
-        <h2 class="text-2xl font-semibold mb-4">Historical Trend</h2>
-        <img id="plot" class="mx-auto" alt="Dengue Cases Plot">
+        <h2 class="text-2xl font-semibold mb-4">Cases Over Time</h2>
+        <canvas id="casesOverTimeChart"></canvas>
     </div>
 </div>
+
+<div class="bg-white p-6 rounded-lg shadow-md mb-8">
+    <h2 class="text-2xl font-semibold mb-4">Top 5 High-Risk Cities</h2>
+    <div class="overflow-x-auto">
+        <table class="min-w-full leading-normal">
+            <thead>
+                <tr>
+                    <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">City</th>
+                    <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Risk Level</th>
+                    <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Predicted Cases</th>
+                    <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Temperature</th>
+                    <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">Rainfall</th>
+                </tr>
+            </thead>
+            <tbody id="highRiskCitiesTable">
+                <!-- High-risk cities will be dynamically inserted here -->
+            </tbody>
+        </table>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    const citySelect = document.getElementById('citySelect');
-    const predictButton = document.getElementById('predictButton');
-    const predictionResult = document.getElementById('predictionResult');
-    const predictionProgress = document.getElementById('predictionProgress');
-    const plot = document.getElementById('plot');
+    fetchDashboardData();
+});
 
-    function fetchCities() {
-        fetch('/get_cities')
-            .then(response => response.json())
-            .then(data => {
-                citySelect.innerHTML = '<option value="">Select a city</option>';
-                data.cities.forEach(city => {
-                    const option = document.createElement('option');
-                    option.value = city;
-                    option.textContent = city;
-                    citySelect.appendChild(option);
-                });
-            });
-    }
-
-    fetchCities();
-
-    predictButton.addEventListener('click', async () => {
-        const cityName = citySelect.value;
-        if (!cityName) {
-            alert('Please select a city');
-            return;
-        }
-        
-        predictionResult.innerHTML = '';
-        predictionProgress.classList.remove('hidden');
-        
-        const response = await fetch('/predict', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: `city_name=${encodeURIComponent(cityName)}`
-        });
-        const data = await response.json();
-        
-        predictionProgress.classList.add('hidden');
-        
-        if (data.error) {
-            predictionResult.innerHTML = `<p class="text-red-600">${data.error}</p>`;
-        } else {
-            const riskColors = {
-                high: 'red',
-                moderate: 'yellow',
-                low: 'green'
-            };
-            const riskIcons = {
-                high: 'alert-triangle',
-                moderate: 'alert-octagon',
-                low: 'check-circle'
-            };
-            
-            const riskColor = riskColors[data.risk_level];
-            const riskIcon = riskIcons[data.risk_level];
-            
-            let factorsHtml = '';
-            if (data.factors.length > 0) {
-                factorsHtml = `
-                    <div class="mb-4">
-                        <h3 class="font-semibold text-lg mb-2">Contributing Factors:</h3>
-                        <ul class="list-disc pl-5">
-                            ${data.factors.map(factor => `
-                                <li>${factor.name}: ${factor.value} (Threshold: ${factor.threshold})</li>
-                            `).join('')}
-                        </ul>
-                    </div>
-                `;
-            }
-            
-            predictionResult.innerHTML = `
-                <div class="bg-${riskColor}-100 border-l-4 border-${riskColor}-500 text-${riskColor}-700 p-4 mb-4" role="alert">
-                    <p class="font-bold flex items-center">
-                        <i data-feather="${riskIcon}" class="mr-2"></i>
-                        ${data.risk_level.charAt(0).toUpperCase() + data.risk_level.slice(1)} Risk
-                    </p>
-                    <p>Estimated cases: <span class="font-semibold">${data.prediction.toFixed(2)}</span> in the next two weeks</p>
-                </div>
-                ${factorsHtml}
-                <div class="mb-4">
-                    <h3 class="font-semibold text-lg mb-2">Recommendations:</h3>
-                    <ul class="list-disc pl-5">
-                        ${data.recommendations.map(rec => `<li>${rec}</li>`).join('')}
-                    </ul>
-                </div>
-            `;
-            feather.replace();
-        }
-    });
-
-    fetch('/plot')
+function fetchDashboardData() {
+    fetch('/get_dashboard_data')
         .then(response => response.json())
         .then(data => {
-            if (data.error) {
-                plot.alt = data.error;
-            } else {
-                plot.src = 'data:image/png;base64,' + data.plot;
-            }
+            createRiskDistributionChart(data.risk_distribution);
+            createCasesOverTimeChart(data.cases_over_time);
+            populateHighRiskCitiesTable(data.high_risk_cities);
+        })
+        .catch(error => {
+            console.error('Error fetching dashboard data:', error);
         });
-});
+}
+
+function createRiskDistributionChart(data) {
+    const ctx = document.getElementById('riskDistributionChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels: ['Low', 'Moderate', 'High'],
+            datasets: [{
+                data: [data.low, data.moderate, data.high],
+                backgroundColor: ['#4CAF50', '#FFC107', '#F44336']
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                }
+            }
+        }
+    });
+}
+
+function createCasesOverTimeChart(data) {
+    const ctx = document.getElementById('casesOverTimeChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: data.dates,
+            datasets: [{
+                label: 'Dengue Cases',
+                data: data.cases,
+                borderColor: 'rgb(75, 192, 192)',
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: true
+                }
+            }
+        }
+    });
+}
+
+function populateHighRiskCitiesTable(cities) {
+    const tableBody = document.getElementById('highRiskCitiesTable');
+    tableBody.innerHTML = '';
+    cities.forEach(city => {
+        const row = `
+            <tr>
+                <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">${city.city}</td>
+                <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">${city.risk_level}</td>
+                <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">${city.predicted_cases.toFixed(2)}</td>
+                <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">${city.temperature.toFixed(1)}°C</td>
+                <td class="px-5 py-5 border-b border-gray-200 bg-white text-sm">${city.rainfall.toFixed(1)} mm</td>
+            </tr>
+        `;
+        tableBody.innerHTML += row;
+    });
+}
 </script>
 {% endblock %}

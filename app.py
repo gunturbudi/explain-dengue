@@ -1,4 +1,5 @@
-from flask import Flask, render_template, request, jsonify
+import os
+from flask import Flask, render_template, request, jsonify, redirect, url_for
 import pandas as pd
 import numpy as np
 import torch
@@ -8,34 +9,18 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import io
 import base64
-import os
 from geopy.distance import geodesic
 from flask_migrate import Migrate
 from datetime import datetime, timedelta
 from sqlalchemy import select, create_engine, and_, func
 import logging
+from werkzeug.utils import secure_filename
 
-# Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 from models import db, CityData
-
-app = Flask(__name__)
-migrate = Migrate(app, db)
-
-# Specify the absolute path for the database
-basedir = os.path.abspath(os.path.dirname(__file__))
-db_path = os.path.join(basedir, 'dengue_data.db')
-
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# Initialize the database with the app
-db.init_app(app)
-
 from dengue_model import (
-    generate_fictional_data,
     engineer_features,
     create_graph,
     DengueGNN,
@@ -43,25 +28,43 @@ from dengue_model import (
     generate_explanation,
     train_model,
     evaluate_model,
-    perform_statistical_analysis
+    perform_statistical_analysis,
+    apply_symbolic_rules
 )
 
-# Global variables to store the model and data
+app = Flask(__name__)
+migrate = Migrate(app, db)
+
+basedir = os.path.abspath(os.path.dirname(__file__))
+db_path = os.path.join(basedir, 'dengue_data.db')
+
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = os.path.join(basedir, 'uploads')
+app.config['ALLOWED_EXTENSIONS'] = {'csv'}
+
+if not os.path.exists(app.config['UPLOAD_FOLDER']):
+    os.makedirs(app.config['UPLOAD_FOLDER'])
+
+db.init_app(app)
+
+engine = create_engine(app.config['SQLALCHEMY_DATABASE_URI'])
+
 model = None
 model_status = "Not trained"
 graph_data = None
 feature_scaler = None
 city_names = []
 
-# Create database engine
-engine = create_engine(app.config['SQLALCHEMY_DATABASE_URI'])
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 def initialize_database():
     with app.app_context():
         db.create_all()
         global city_names
-        city_names = [city[0] for city in db.session.query(CityData.city).distinct()]
-
+        city_names = [city[0] for city in db.session.query(CityData.adm3_en).distinct()]
 
 @app.route('/')
 def index():
@@ -70,10 +73,10 @@ def index():
 @app.route('/dashboard')
 def dashboard():
     with app.app_context():
-        total_cities = db.session.query(CityData.city).distinct().count()
-        total_cases = db.session.query(db.func.sum(CityData.dengue_cases)).scalar() or 0
-        avg_temperature = db.session.query(db.func.avg(CityData.temperature)).scalar() or 0
-        avg_rainfall = db.session.query(db.func.avg(CityData.rainfall)).scalar() or 0
+        total_cities = db.session.query(CityData.adm3_en).distinct().count()
+        total_cases = db.session.query(db.func.sum(CityData.case_total_dengue)).scalar() or 0
+        avg_temperature = db.session.query(db.func.avg(CityData.tave)).scalar() or 0
+        avg_rainfall = db.session.query(db.func.avg(CityData.pr)).scalar() or 0
 
     return render_template('dashboard.html', 
                            total_cities=total_cities,
@@ -81,17 +84,63 @@ def dashboard():
                            avg_temperature=avg_temperature,
                            avg_rainfall=avg_rainfall)
 
+@app.route('/get_dashboard_data')
+def get_dashboard_data():
+    # Fetch necessary data from the database
+    with app.app_context():
+        total_cities = db.session.query(CityData.adm3_en).distinct().count()
+        total_cases = db.session.query(db.func.sum(CityData.case_total_dengue)).scalar() or 0
+        avg_temperature = db.session.query(db.func.avg(CityData.tave)).scalar() or 0
+        avg_rainfall = db.session.query(db.func.avg(CityData.pr)).scalar() or 0
+
+        # Get risk distribution
+        risk_distribution = {
+            'low': db.session.query(CityData).filter(CityData.case_total_dengue < 10).count(),
+            'moderate': db.session.query(CityData).filter(CityData.case_total_dengue.between(10, 50)).count(),
+            'high': db.session.query(CityData).filter(CityData.case_total_dengue > 50).count()
+        }
+
+        # Get cases over time
+        cases_over_time = db.session.query(
+            CityData.date,
+            db.func.sum(CityData.case_total_dengue)
+        ).group_by(CityData.date).order_by(CityData.date).all()
+
+        # Get top 5 high-risk cities
+        high_risk_cities = db.session.query(CityData).order_by(CityData.case_total_dengue.desc()).limit(5).all()
+
+    return jsonify({
+        'total_cities': total_cities,
+        'total_cases': int(total_cases),
+        'avg_temperature': round(float(avg_temperature), 2),
+        'avg_rainfall': round(float(avg_rainfall), 2),
+        'risk_distribution': risk_distribution,
+        'cases_over_time': {
+            'dates': [str(date) for date, _ in cases_over_time],
+            'cases': [int(cases or 0) for _, cases in cases_over_time]
+        },
+        'high_risk_cities': [
+            {
+                'city': city.adm3_en,
+                'risk_level': 'High' if city.case_total_dengue > 50 else 'Moderate',
+                'predicted_cases': int(city.case_total_dengue or 0),
+                'temperature': round(float(city.tave), 2) if city.tave is not None else None,
+                'rainfall': round(float(city.pr), 2) if city.pr is not None else None
+            } for city in high_risk_cities
+        ]
+    })
+    
 @app.route('/data')
 def data_management():
     page = request.args.get('page', 1, type=int)
-    per_page = 10  # You can adjust this number
+    per_page = 10
     city_filter = request.args.get('city', '')
     date_filter = request.args.get('date', '')
 
     query = CityData.query
 
     if city_filter:
-        query = query.filter(CityData.city.ilike(f'%{city_filter}%'))
+        query = query.filter(CityData.adm3_en.ilike(f'%{city_filter}%'))
     if date_filter:
         query = query.filter(CityData.date == date_filter)
 
@@ -104,67 +153,76 @@ def data_management():
                            city_filter=city_filter,
                            date_filter=date_filter)
 
-@app.route('/reset_data', methods=['POST'])
-def reset_data():
-    try:
-        # Delete all existing data
-        db.session.query(CityData).delete()
-        db.session.commit()
-
-        # Generate new data
-        city_data = generate_fictional_data()
+@app.route('/upload_csv', methods=['POST'])
+def upload_csv():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
         
-        for _, row in city_data.iterrows():
-            city_record = CityData(
-                city=row['city'],
-                date=row['date'],
-                temperature=row['temperature'],
-                rainfall=row['rainfall'],
-                population=row['population'],
-                dengue_cases=row['dengue_cases']
-            )
-            db.session.add(city_record)
-        
-        db.session.commit()
-        
-        return jsonify({"message": "Data reset successfully. New data generated and stored in the database."})
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+        try:
+            # Clear existing data
+            db.session.query(CityData).delete()
+            db.session.commit()
+            
+            # Read and process CSV file
+            df = pd.read_csv(filepath)
+            for _, row in df.iterrows():
+                city_data = CityData(
+                    adm3_en=row['adm3_en'],
+                    adm3_pcode=row['adm3_pcode'],
+                    date=datetime.strptime(row['date'], '%Y-%m-%d').date(),
+                    year=row['year'],
+                    week=row['week'],
+                    doh_pois_count=row['doh_pois_count'],
+                    ndvi=row['ndvi'],
+                    pct_area_cropland=row['pct_area_cropland'],
+                    pct_area_flood_hazard_5yr_high=row['pct_area_flood_hazard_5yr_high'],
+                    pct_area_flood_hazard_5yr_low=row['pct_area_flood_hazard_5yr_low'],
+                    pct_area_flood_hazard_5yr_med=row['pct_area_flood_hazard_5yr_med'],
+                    pct_area_herbaceous_wetland=row['pct_area_herbaceous_wetland'],
+                    pct_area_mangroves=row['pct_area_mangroves'],
+                    pct_area_permanent_water_bodies=row['pct_area_permanent_water_bodies'],
+                    pnp=row['pnp'],
+                    pop_count_mean=row['pop_count_mean'],
+                    pop_count_stdev=row['pop_count_stdev'],
+                    pop_count_total=row['pop_count_total'],
+                    pop_density_mean=row['pop_density_mean'],
+                    pop_density_stdev=row['pop_density_stdev'],
+                    pr=row['pr'],
+                    rh=row['rh'],
+                    rwi_mean=row['rwi_mean'],
+                    rwi_std=row['rwi_std'],
+                    spi3=row['spi3'],
+                    spi6=row['spi6'],
+                    tave=row['tave'],
+                    tmax=row['tmax'],
+                    tmin=row['tmin'],
+                    case_total_dengue=row['case_total_dengue'],
+                    death_total_dengue=row['death_total_dengue']
+                )
+                db.session.add(city_data)
+            
+            db.session.commit()
+            return jsonify({"message": "CSV file processed successfully"}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            os.remove(filepath)  # Remove the uploaded file after processing
+    else:
+        return jsonify({"error": "File type not allowed"}), 400
 
 @app.route('/model')
 def model_management():
     global model
     model_status = "Trained" if model is not None else "Not trained"
     return render_template('model_management.html', model_status=model_status)
-
-
-@app.route('/generate_data', methods=['POST'])
-def generate_data():
-    if CityData.query.first():
-        return jsonify({"message": "Data already exists in the database"})
-    
-    city_data = generate_fictional_data()
-    
-    for _, row in city_data.iterrows():
-        city_record = CityData(
-            city=row['city'],
-            date=row['date'],
-            temperature=row['temperature'],
-            rainfall=row['rainfall'],
-            population=row['population'],
-            dengue_cases=row['dengue_cases'],
-            latitude=row['latitude'],
-            longitude=row['longitude']
-        )
-        db.session.add(city_record)
-    
-    db.session.commit()
-    
-    global city_names
-    city_names = [city[0] for city in db.session.query(CityData.city).distinct()]
-    
-    return jsonify({"message": "Fictional data generated and stored in the database successfully"})
 
 @app.route('/train', methods=['POST'])
 def train():
@@ -176,7 +234,7 @@ def train():
         city_data = pd.DataFrame(result.fetchall(), columns=result.keys())
     
     if city_data.empty:
-        return jsonify({"error": "No data available. Please generate data first."})
+        return jsonify({"error": "No data available. Please upload data first."})
     
     print("Sample of city_data before engineering features:")
     print(city_data.head())
@@ -196,7 +254,7 @@ def train():
     
     mse, r2 = evaluate_model(model, test_data)
     
-    city_names = city_data['city'].unique().tolist()
+    city_names = city_data['adm3_en'].unique().tolist()
     
     model_status = "Trained"
     
@@ -216,10 +274,10 @@ def plot():
         city_data = pd.DataFrame(result.fetchall(), columns=result.keys())
     
     if city_data.empty:
-        return jsonify({"error": "No data available. Please generate data first."})
+        return jsonify({"error": "No data available. Please upload data first."})
     
     plt.figure(figsize=(10, 6))
-    avg_cases = city_data.groupby('date')['dengue_cases'].mean()
+    avg_cases = city_data.groupby('date')['case_total_dengue'].mean()
     plt.plot(avg_cases.index, avg_cases.values)
     plt.xlabel('Date')
     plt.ylabel('Average Dengue Cases')
@@ -239,7 +297,7 @@ def fetch_city_data(city_name, weeks=12):
     start_date = end_date - timedelta(weeks=weeks)
     
     stmt = select(CityData).where(
-        (CityData.city == city_name) &
+        (CityData.adm3_en == city_name) &
         (CityData.date >= start_date) &
         (CityData.date <= end_date)
     )
@@ -252,7 +310,6 @@ def fetch_city_data(city_name, weeks=12):
 
 def calculate_thresholds(data):
     if data.empty:
-        # Return default values if the data is empty
         return {
             'high_risk': 50,
             'moderate_risk': 20,
@@ -261,19 +318,18 @@ def calculate_thresholds(data):
         }
     
     return {
-        'high_risk': np.percentile(data['dengue_cases'], 75) if len(data['dengue_cases']) > 0 else 50,
-        'moderate_risk': np.percentile(data['dengue_cases'], 50) if len(data['dengue_cases']) > 0 else 20,
-        'heavy_rainfall': np.percentile(data['rainfall'], 75) if len(data['rainfall']) > 0 else 100,
-        'high_temperature': np.percentile(data['temperature'], 75) if len(data['temperature']) > 0 else 30,
+        'high_risk': np.percentile(data['case_total_dengue'], 75) if len(data['case_total_dengue']) > 0 else 50,
+        'moderate_risk': np.percentile(data['case_total_dengue'], 50) if len(data['case_total_dengue']) > 0 else 20,
+        'heavy_rainfall': np.percentile(data['pr'], 75) if len(data['pr']) > 0 else 100,
+        'high_temperature': np.percentile(data['tave'], 75) if len(data['tave']) > 0 else 30,
     }
-
 
 @app.route('/predict', methods=['POST'])
 def predict():
     global model, graph_data, feature_scaler, city_names
     
     if not city_names:
-        return jsonify({"error": "No cities available. Please generate data and train the model first."})
+        return jsonify({"error": "No cities available. Please upload data and train the model first."})
     
     city_name = request.form['city_name']
     if city_name not in city_names:
@@ -286,17 +342,16 @@ def predict():
     
     try:
         with torch.no_grad():
-            prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)[city_index].item()
+            prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr, graph_data.symbolic_rules)[city_index].item()
         
-        # Check for NaN in prediction
         if np.isnan(prediction):
             raise ValueError("NaN value in prediction")
         
         features = graph_data.x[city_index].cpu().numpy()
         feature_dict = {
-            'rainfall': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 1],
-            'temperature': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 0],
-            'population': feature_scaler.inverse_transform(features.reshape(1, -1))[0, 2]
+            'pr': feature_scaler.inverse_transform(features.reshape(1, -1))[0, graph_data.x.shape[1] - 3],
+            'tave': feature_scaler.inverse_transform(features.reshape(1, -1))[0, graph_data.x.shape[1] - 2],
+            'pop_count_total': feature_scaler.inverse_transform(features.reshape(1, -1))[0, graph_data.x.shape[1] - 1]
         }
         
         city_data = fetch_city_data(city_name)
@@ -307,16 +362,16 @@ def predict():
         else:
             stats_analysis = None
         
-        # Find neighboring cities with elevated risk
         neighboring_cities = []
         for i, edge in enumerate(graph_data.edge_index.t()):
             if edge[0] == city_index:
                 neighbor_index = edge[1]
-                neighbor_prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr)[neighbor_index].item()
+                neighbor_prediction = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr, graph_data.symbolic_rules)[neighbor_index].item()
                 if neighbor_prediction > thresholds['moderate_risk']:
                     neighboring_cities.append(city_names[neighbor_index])
         
-        explanation = generate_explanation(city_name, prediction, feature_dict, thresholds, neighboring_cities, stats_analysis)
+        symbolic_rules_impact = apply_symbolic_rules(city_data.iloc[-1:])
+        explanation = generate_explanation(city_name, prediction, feature_dict, thresholds, neighboring_cities, stats_analysis, symbolic_rules_impact.iloc[0])
         
         return jsonify(explanation)
     
@@ -327,23 +382,6 @@ def predict():
 @app.route('/risk_monitor')
 def risk_monitor():
     return render_template('risk_monitor.html')
-
-
-def fetch_city_data(city_name, weeks=12):
-    end_date = datetime.now().date()
-    start_date = end_date - timedelta(weeks=weeks)
-    
-    stmt = select(CityData).where(
-        (CityData.city == city_name) &
-        (CityData.date >= start_date) &
-        (CityData.date <= end_date)
-    )
-    with engine.connect() as connection:
-        result = connection.execute(stmt)
-        data = pd.DataFrame(result.fetchall(), columns=result.keys())
-    
-    data['week'] = pd.to_datetime(data['date']).dt.isocalendar().week
-    return data
 
 @app.route('/get_risk_data')
 def get_risk_data():
@@ -356,9 +394,8 @@ def get_risk_data():
         return jsonify({"error": "Model not trained yet. Please train the model first."})
 
     try:
-        # Fetch all unique cities
         logger.info("Fetching unique cities")
-        stmt = select(CityData.city).distinct()
+        stmt = select(CityData.adm3_en).distinct()
         with engine.connect() as connection:
             result = connection.execute(stmt)
             cities = [row[0] for row in result]
@@ -368,9 +405,8 @@ def get_risk_data():
             logger.warning("No cities available in the database")
             return jsonify({"error": "No cities available in the database."})
 
-        # Fetch the latest data for all cities
         logger.info("Fetching latest data for all cities")
-        stmt = select(CityData).where(CityData.city.in_(cities))
+        stmt = select(CityData).where(CityData.adm3_en.in_(cities))
         with engine.connect() as connection:
             result = connection.execute(stmt)
             latest_data = pd.DataFrame(result.fetchall(), columns=result.keys())
@@ -380,12 +416,10 @@ def get_risk_data():
             logger.warning("No data available in the database")
             return jsonify({"error": "No data available in the database."})
 
-        # Group by city and get the latest date for each city
         logger.info("Filtering for latest data per city")
-        latest_data = latest_data.loc[latest_data.groupby('city')['date'].idxmax()]
+        latest_data = latest_data.loc[latest_data.groupby('adm3_en')['date'].idxmax()]
         logger.info(f"After filtering, {len(latest_data)} rows remain")
 
-        # Prepare data for prediction
         logger.info("Engineering features")
         latest_data = engineer_features(latest_data)
         logger.info(f"After feature engineering, shape of data: {latest_data.shape}")
@@ -402,14 +436,12 @@ def get_risk_data():
             logger.error(f"Error creating graph: {str(e)}")
             return jsonify({"error": f"Error creating graph: {str(e)}"})
 
-        # Make predictions
         logger.info("Making predictions")
         model.eval()
         with torch.no_grad():
-            predictions = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr).cpu().numpy()
+            predictions = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr, graph_data.symbolic_rules).cpu().numpy()
         logger.info(f"Made {len(predictions)} predictions")
 
-        # Define risk thresholds
         thresholds = {
             'high_risk': 50,
             'moderate_risk': 20,
@@ -418,46 +450,126 @@ def get_risk_data():
             'high_population_density': 1000000
         }
 
-        # Prepare risk data
         logger.info("Preparing risk data")
         risk_data = []
         for i, city in enumerate(cities):
-            city_data = latest_data[latest_data['city'] == city]
+            city_data = latest_data[latest_data['adm3_en'] == city]
             if city_data.empty:
                 logger.warning(f"No data for city {city}")
-                continue  # Skip this city if we have no data for it
+                continue
             city_data = city_data.iloc[0]
             
-            # Determine risk level
-            if predictions[i] > thresholds['high_risk']:
+            prediction = float(predictions[i])
+            if np.isnan(prediction):
+                prediction = None  # Replace NaN with None
+
+            if prediction is not None and prediction > thresholds['high_risk']:
                 risk_level = "High"
-            elif predictions[i] > thresholds['moderate_risk']:
+            elif prediction is not None and prediction > thresholds['moderate_risk']:
                 risk_level = "Moderate"
             else:
                 risk_level = "Low"
             
+            try:
+                symbolic_rules_impact = apply_symbolic_rules(city_data)
+                risk_factors = [factor for factor, impact in symbolic_rules_impact.iloc[0].items() if impact > 0]
+            except Exception as e:
+                logger.error(f"Error applying symbolic rules for {city}: {str(e)}")
+                risk_factors = []
+            
             risk_data.append({
                 "city": city,
-                "prediction": float(predictions[i]),
+                "prediction": prediction,
                 "risk_level": risk_level,
-                "temperature": float(city_data['temperature']),
-                "rainfall": float(city_data['rainfall']),
-                "population": int(city_data['population'])
+                "temperature": float(city_data['tave']) if pd.notnull(city_data['tave']) else None,
+                "rainfall": float(city_data['pr']) if pd.notnull(city_data['pr']) else None,
+                "population": int(city_data['pop_count_total']) if pd.notnull(city_data['pop_count_total']) else None,
+                "risk_factors": risk_factors,
+                "ndvi": float(city_data['ndvi']) if pd.notnull(city_data['ndvi']) else None,
+                "relative_humidity": float(city_data['rh']) if pd.notnull(city_data['rh']) else None,
+                "pct_area_cropland": float(city_data['pct_area_cropland']) if pd.notnull(city_data['pct_area_cropland']) else None,
+                "pct_area_flood_hazard": float(city_data['pct_area_flood_hazard_5yr_high'] + 
+                                               city_data['pct_area_flood_hazard_5yr_med'] + 
+                                               city_data['pct_area_flood_hazard_5yr_low']) if pd.notnull(city_data['pct_area_flood_hazard_5yr_high']) and 
+                                                                                              pd.notnull(city_data['pct_area_flood_hazard_5yr_med']) and 
+                                                                                              pd.notnull(city_data['pct_area_flood_hazard_5yr_low']) else None
             })
 
         logger.info(f"Prepared risk data for {len(risk_data)} cities")
-        return jsonify(risk_data)
+
+        # Calculate additional statistics for dashboard charts
+        avg_temperature = np.mean([city['temperature'] for city in risk_data if city['temperature'] is not None])
+        avg_rainfall = np.mean([city['rainfall'] for city in risk_data if city['rainfall'] is not None])
+        risk_distribution = {
+            'High': len([city for city in risk_data if city['risk_level'] == 'High']),
+            'Moderate': len([city for city in risk_data if city['risk_level'] == 'Moderate']),
+            'Low': len([city for city in risk_data if city['risk_level'] == 'Low'])
+        }
+
+        return jsonify({
+            'cities': risk_data,
+            'avg_temperature': avg_temperature,
+            'avg_rainfall': avg_rainfall,
+            'risk_distribution': risk_distribution
+        })
 
     except Exception as e:
         logger.error(f"Error in get_risk_data: {str(e)}", exc_info=True)
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
-
-
+    
+def load_csv_data(csv_path):
+    df = pd.read_csv(csv_path)
+    with app.app_context():
+        db.drop_all()
+        db.create_all()
+        
+        for _, row in df.iterrows():
+            city_data = CityData(
+                adm3_en=row['adm3_en'],
+                adm3_pcode=row['adm3_pcode'],
+                date=datetime.strptime(row['date'], '%Y-%m-%d').date(),
+                year=row['year'],
+                week=row['week'],
+                doh_pois_count=row['doh_pois_count'],
+                ndvi=row['ndvi'],
+                pct_area_cropland=row['pct_area_cropland'],
+                pct_area_flood_hazard_5yr_high=row['pct_area_flood_hazard_5yr_high'],
+                pct_area_flood_hazard_5yr_low=row['pct_area_flood_hazard_5yr_low'],
+                pct_area_flood_hazard_5yr_med=row['pct_area_flood_hazard_5yr_med'],
+                pct_area_herbaceous_wetland=row['pct_area_herbaceous_wetland'],
+                pct_area_mangroves=row['pct_area_mangroves'],
+                pct_area_permanent_water_bodies=row['pct_area_permanent_water_bodies'],
+                pnp=row['pnp'],
+                pop_count_mean=row['pop_count_mean'],
+                pop_count_stdev=row['pop_count_stdev'],
+                pop_count_total=row['pop_count_total'],
+                pop_density_mean=row['pop_density_mean'],
+                pop_density_stdev=row['pop_density_stdev'],
+                pr=row['pr'],
+                rh=row['rh'],
+                rwi_mean=row['rwi_mean'],
+                rwi_std=row['rwi_std'],
+                spi3=row['spi3'],
+                spi6=row['spi6'],
+                tave=row['tave'],
+                tmax=row['tmax'],
+                tmin=row['tmin'],
+                case_total_dengue=row['case_total_dengue'],
+                death_total_dengue=row['death_total_dengue']
+            )
+            db.session.add(city_data)
+        
+        db.session.commit()
+    
+    global city_names
+    city_names = df['adm3_en'].unique().tolist()
+    
 @app.route('/get_cities', methods=['GET'])
 def get_cities():
     global city_names
     return jsonify({"cities": city_names})
 
 if __name__ == '__main__':
-    initialize_database()
+    csv_path = os.path.join(basedir, 'fil_data.csv')  # Adjust this path as needed
+    load_csv_data(csv_path)
     app.run(debug=True)

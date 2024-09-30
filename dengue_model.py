@@ -1,4 +1,3 @@
-# dengue_model.py
 import pandas as pd
 import numpy as np
 import torch
@@ -13,71 +12,41 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def generate_fictional_data(num_cities=50, num_weeks=104):
-    np.random.seed(42)
-    cities = [f'CITY_{i:03d}' for i in range(num_cities)]
-    dates = pd.date_range(start='2022-01-01', periods=num_weeks, freq='W')
-    
-    data = []
-    for city in cities:
-        lat = np.random.uniform(-90, 90)
-        lon = np.random.uniform(-180, 180)
-        base_temp = np.random.uniform(20, 30)
-        base_rainfall = np.random.uniform(50, 150)
-        base_population = np.random.uniform(50000, 500000)
-        
-        for date in dates:
-            temp = max(0, base_temp + np.random.normal(0, 2))
-            rainfall = max(0, base_rainfall * np.random.lognormal(0, 0.5))
-            population = max(1000, base_population * (1 + np.random.uniform(-0.01, 0.01)))
-            
-            season_factor = 1 + 0.5 * np.sin(2 * np.pi * date.dayofyear / 365)
-            dengue_cases = max(0, int(np.random.negative_binomial(n=5, p=0.5) * season_factor * (temp/25) * (rainfall/100) * (population/100000)))
-            
-            data.append({
-                'city': city,
-                'date': date.date(),
-                'temperature': temp,
-                'rainfall': rainfall,
-                'population': population,
-                'dengue_cases': dengue_cases,
-                'latitude': lat,
-                'longitude': lon
-            })
-    
-    df = pd.DataFrame(data)
-    
-    # Ensure no NaN values
-    assert df.isna().sum().sum() == 0, "NaN values found in generated data"
-    
-    return df
-
 def engineer_features(df):
     logger.info(f"Starting feature engineering. Initial shape: {df.shape}")
 
-    # Ensure the 'date' column is in datetime format
     df['date'] = pd.to_datetime(df['date'])
-
-    df = df.sort_values(['city', 'date'])
+    df = df.sort_values(['adm3_en', 'date'])
     
     # Add lag features
-    for col in ['temperature', 'rainfall', 'dengue_cases']:
-        df[f'{col}_lag1'] = df.groupby('city')[col].shift(1)
+    for col in ['tave', 'pr', 'case_total_dengue']:
+        df[f'{col}_lag1'] = df.groupby('adm3_en')[col].shift(1)
     
-    # Add rolling window feature
-    df['cumulative_rainfall_4w'] = df.groupby('city')['rainfall'].rolling(window=4, min_periods=1).sum().reset_index(0, drop=True)
+    # Add rolling window features
+    df['cumulative_rainfall_4w'] = df.groupby('adm3_en')['pr'].rolling(window=4, min_periods=1).sum().reset_index(0, drop=True)
     
     # Add temporal features
     df['day_of_year'] = df['date'].dt.dayofyear
     df['month'] = df['date'].dt.month
     
     # For the latest data point of each city, use the current values for lag features
-    latest_mask = df.groupby('city')['date'].transform('max') == df['date']
-    for col in ['temperature', 'rainfall', 'dengue_cases']:
+    latest_mask = df.groupby('adm3_en')['date'].transform('max') == df['date']
+    for col in ['tave', 'pr', 'case_total_dengue']:
         df.loc[latest_mask, f'{col}_lag1'] = df.loc[latest_mask, col]
     
-    # Fill any remaining NaN values
-    df = df.fillna(method='ffill').fillna(method='bfill')
+    # Improved handling of NaN values
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    for col in numeric_columns:
+        if col in ['pct_area_cropland', 'pct_area_herbaceous_wetland', 'pct_area_mangroves', 'pct_area_permanent_water_bodies']:
+            df[col] = df[col].fillna(0)
+        elif col in ['pop_count_mean', 'pop_count_stdev', 'pop_count_total', 'pop_density_mean', 'pop_density_stdev']:
+            df[col] = df.groupby('adm3_en')[col].transform(lambda x: x.fillna(x.mean()))
+        elif col in ['spi3', 'spi6', 'pnp']:
+            df[col] = df[col].fillna(df[col].mean())
+        elif col == 'death_total_dengue':
+            df[col] = df[col].fillna(0)  # Assume no deaths if not reported
+        else:
+            df[col] = df.groupby('adm3_en')[col].transform(lambda x: x.fillna(x.mean()))
     
     # Ensure no infinity values
     df = df.replace([np.inf, -np.inf], np.finfo(np.float64).max)
@@ -85,13 +54,143 @@ def engineer_features(df):
     logger.info(f"Final shape after feature engineering: {df.shape}")
     logger.info(f"Columns after feature engineering: {df.columns.tolist()}")
     
-    # Ensure no NaN values
     nan_columns = df.columns[df.isna().any()].tolist()
     if nan_columns:
         logger.warning(f"NaN values found in columns: {nan_columns}")
         logger.warning(f"Number of NaN values: \n{df[nan_columns].isna().sum()}")
+    else:
+        logger.info("No NaN values remain after preprocessing")
     
     return df
+
+def create_graph(df):
+    logger.info(f"Starting graph creation with {len(df)} rows of data")
+    
+    node_mapping = {code: i for i, code in enumerate(df['adm3_en'].unique())}
+    
+    feature_cols = ['tave', 'pr', 'rh', 'ndvi', 'pop_count_total', 'case_total_dengue',
+                    'tave_lag1', 'pr_lag1', 'case_total_dengue_lag1', 'cumulative_rainfall_4w']
+    
+    logger.info(f"Using the following features for node creation: {feature_cols}")
+    
+    if not all(col in df.columns for col in feature_cols):
+        raise ValueError("Not all required feature columns found in the DataFrame")
+    
+    # Handle NaN values before creating node features
+    df[feature_cols] = df[feature_cols].fillna(df[feature_cols].mean())
+    
+    node_features = df.groupby('adm3_en')[feature_cols].last().values
+    
+    # Check for any remaining NaN values and replace them with column means
+    col_means = np.nanmean(node_features, axis=0)
+    nan_mask = np.isnan(node_features)
+    node_features[nan_mask] = np.take(col_means, nan_mask.nonzero()[1])
+    
+    num_nodes = len(node_mapping)
+    edges = []
+    edge_features = []
+    
+    # Create edges based on feature similarity
+    for i in range(num_nodes):
+        for j in range(i+1, num_nodes):
+            temp_diff = abs(node_features[i][0] - node_features[j][0])
+            rain_diff = abs(node_features[i][1] - node_features[j][1])
+            
+            if temp_diff < 5 and rain_diff < 50:
+                edges.append([i, j])
+                edges.append([j, i])
+                edge_features.append([temp_diff, rain_diff])
+                edge_features.append([temp_diff, rain_diff])
+    
+    if not edges:
+        raise ValueError("No edges could be created. Consider adjusting the similarity thresholds.")
+    
+    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    edge_attr = torch.tensor(edge_features, dtype=torch.float)
+    
+    y = df.groupby('adm3_en')['case_total_dengue'].last().values
+    
+    scaler = StandardScaler()
+    node_features = scaler.fit_transform(node_features)
+    
+    symbolic_rules_impact = apply_symbolic_rules(df)
+    symbolic_rules_impact = symbolic_rules_impact.groupby(df['adm3_en']).last().values
+    
+    data = Data(x=torch.tensor(node_features, dtype=torch.float),
+                edge_index=edge_index,
+                edge_attr=edge_attr,
+                y=torch.tensor(y, dtype=torch.float),
+                symbolic_rules=torch.tensor(symbolic_rules_impact, dtype=torch.float))
+    
+    logger.info(f"Graph created with {data.num_nodes} nodes and {data.num_edges} edges")
+    logger.info(f"Symbolic rules shape: {symbolic_rules_impact.shape}")
+    return data, scaler
+
+def apply_symbolic_rules(data):
+    # Ensure data is a DataFrame
+    if isinstance(data, pd.Series):
+        data = data.to_frame().T
+
+    rules_impact = pd.DataFrame(index=data.index, columns=['climate', 'environmental', 'socioeconomic', 'vector', 'temporal'])
+    
+    # Climate Rules
+    rules_impact['climate'] = (
+        ((data['tave'] >= 25) & (data['tave'] <= 35)).astype(int) +
+        (data['pr'] > data['pr'].mean()).astype(int) +
+        ((data['rh'] >= 60) & (data['rh'] <= 80)).astype(int)
+    ).fillna(0)
+    
+    # Environmental Rules
+    rules_impact['environmental'] = (
+        (data['pct_area_cropland'] > data['pct_area_cropland'].mean()).astype(int) +
+        (data['ndvi'] < data['ndvi'].mean()).astype(int)
+    ).fillna(0)
+    
+    # Socioeconomic Rules
+    rules_impact['socioeconomic'] = (
+        (data['pop_density_mean'] > data['pop_density_mean'].mean()).astype(int) +
+        (data['doh_pois_count'] < data['doh_pois_count'].mean()).astype(int) +
+        (data['rwi_mean'] < data['rwi_mean'].mean()).astype(int)
+    ).fillna(0)
+    
+    # Vector Dynamics Rules
+    rules_impact['vector'] = (
+        (data['case_total_dengue'] > data['case_total_dengue'].mean()).astype(int)
+    ).fillna(0)
+    
+    # Temporal Rules
+    try:
+        data['date'] = pd.to_datetime(data['date'])
+        peak_season = (data['date'].dt.month.isin([6, 7, 8, 9, 10])).astype(int)
+    except (AttributeError, KeyError):
+        peak_season = pd.Series(0, index=data.index)
+    
+    try:
+        increasing_cases = (data['case_total_dengue'] > data['case_total_dengue'].shift(1)).astype(int)
+    except KeyError:
+        increasing_cases = pd.Series(0, index=data.index)
+    
+    rules_impact['temporal'] = (peak_season + increasing_cases).fillna(0)
+    
+    return rules_impact
+
+class DengueGNN(torch.nn.Module):
+    def __init__(self, num_node_features, num_edge_features, hidden_channels, num_symbolic_rules, num_heads=4):
+        super(DengueGNN, self).__init__()
+        self.conv1 = GATConv(num_node_features, hidden_channels, heads=num_heads, edge_dim=num_edge_features)
+        self.conv2 = GATConv(hidden_channels * num_heads, hidden_channels, heads=1, concat=False, edge_dim=num_edge_features)
+        self.lin1 = torch.nn.Linear(hidden_channels, hidden_channels)
+        self.lin2 = torch.nn.Linear(hidden_channels, 1)
+        self.symbolic_rules = torch.nn.Linear(num_symbolic_rules, hidden_channels)
+
+    def forward(self, x, edge_index, edge_attr, symbolic_rules):
+        x = torch.relu(self.conv1(x, edge_index, edge_attr))
+        x = torch.relu(self.conv2(x, edge_index, edge_attr))
+        symbolic_impact = torch.relu(self.symbolic_rules(symbolic_rules))
+        x = x + symbolic_impact  # Incorporate symbolic rules
+        x = torch.relu(self.lin1(x))
+        x = self.lin2(x)
+        return x.squeeze(-1)
 
 def train_test_split_graph(data, test_size=0.2, random_state=None):
     num_nodes = data.num_nodes
@@ -118,93 +217,13 @@ def train_test_split_graph(data, test_size=0.2, random_state=None):
     
     return train_data, test_data
 
-def create_graph(df, max_distance=1000):
-    logger.info(f"Starting graph creation with {len(df)} rows of data")
-    
-    node_mapping = {code: i for i, code in enumerate(df['city'].unique())}
-    
-    # Define the desired feature columns
-    desired_feature_cols = ['temperature', 'rainfall', 'population', 'temperature_lag1', 'rainfall_lag1', 'cases_lag1', 'cumulative_rainfall_4w', 'day_of_year', 'month']
-    
-    # Select only the columns that exist in the DataFrame
-    feature_cols = [col for col in desired_feature_cols if col in df.columns]
-    
-    logger.info(f"Using the following features for node creation: {feature_cols}")
-    
-    if not feature_cols:
-        raise ValueError("No valid feature columns found in the DataFrame")
-    
-    node_features = df.groupby('city')[feature_cols].last().values
-    
-    # Ensure no NaN or inf values in node features
-    if np.isnan(node_features).any():
-        logger.warning("NaN values found in node features. Replacing with column means.")
-        col_means = np.nanmean(node_features, axis=0)
-        nan_mask = np.isnan(node_features)
-        node_features[nan_mask] = np.take(col_means, nan_mask.nonzero()[1])
-    
-    if np.isinf(node_features).any():
-        logger.warning("Inf values found in node features. Replacing with column means.")
-        col_means = np.nanmean(np.where(np.isinf(node_features), np.nan, node_features), axis=0)
-        inf_mask = np.isinf(node_features)
-        node_features[inf_mask] = np.take(col_means, inf_mask.nonzero()[1])
-    
-    num_nodes = len(node_mapping)
-    edges = []
-    edge_features = []
-    
-    for city1, idx1 in node_mapping.items():
-        city1_data = df[df['city'] == city1].iloc[-1]
-        for city2, idx2 in node_mapping.items():
-            if city1 != city2:
-                city2_data = df[df['city'] == city2].iloc[-1]
-                try:
-                    distance = geodesic((city1_data['latitude'], city1_data['longitude']),
-                                        (city2_data['latitude'], city2_data['longitude'])).km
-                    if distance <= max_distance:
-                        edges.append([idx1, idx2])
-                        population_diff = abs(city1_data['population'] - city2_data['population']) / 1000000
-                        edge_features.append([distance, population_diff])
-                except Exception as e:
-                    logger.warning(f"Error calculating distance between {city1} and {city2}: {str(e)}")
-    
-    if not edges:
-        raise ValueError("No edges could be created. Check if cities are within the specified max_distance.")
-    
-    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-    edge_attr = torch.tensor(edge_features, dtype=torch.float)
-    
-    y = df.groupby('city')['dengue_cases'].last().values
-    
-    scaler = StandardScaler()
-    node_features = scaler.fit_transform(node_features)
-    
-    data = Data(x=torch.tensor(node_features, dtype=torch.float),
-                edge_index=edge_index,
-                edge_attr=edge_attr,
-                y=torch.tensor(y, dtype=torch.float))
-    
-    logger.info(f"Graph created with {data.num_nodes} nodes and {data.num_edges} edges")
-    return data, scaler
-
-class DengueGNN(torch.nn.Module):
-    def __init__(self, num_node_features, num_edge_features, hidden_channels, num_heads=4):
-        super(DengueGNN, self).__init__()
-        self.conv1 = GATConv(num_node_features, hidden_channels, heads=num_heads, edge_dim=num_edge_features)
-        self.conv2 = GATConv(hidden_channels * num_heads, hidden_channels, heads=1, concat=False, edge_dim=num_edge_features)
-        self.lin = torch.nn.Linear(hidden_channels, 1)
-
-    def forward(self, x, edge_index, edge_attr):
-        x = torch.relu(self.conv1(x, edge_index, edge_attr))
-        x = torch.relu(self.conv2(x, edge_index, edge_attr))
-        x = self.lin(x)
-        return x.squeeze(-1)
-
 def train_model(train_data, num_epochs=200):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    num_symbolic_rules = train_data.symbolic_rules.shape[1]
     model = DengueGNN(num_node_features=train_data.num_node_features, 
                       num_edge_features=train_data.num_edge_features, 
-                      hidden_channels=64).to(device)
+                      hidden_channels=64,
+                      num_symbolic_rules=num_symbolic_rules).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
     criterion = torch.nn.MSELoss()
 
@@ -212,32 +231,30 @@ def train_model(train_data, num_epochs=200):
     model.train()
     for epoch in range(num_epochs):
         optimizer.zero_grad()
-        out = model(train_data.x, train_data.edge_index, train_data.edge_attr)
+        out = model(train_data.x, train_data.edge_index, train_data.edge_attr, train_data.symbolic_rules)
         loss = criterion(out[train_data.train_mask], train_data.y[train_data.train_mask])
         loss.backward()
         optimizer.step()
         
-        # Check for NaN in model parameters
         if any(torch.isnan(param).any() for param in model.parameters()):
             raise ValueError("NaN values found in model parameters during training")
     
     return model
 
-
 def evaluate_model(model, test_data):
     model.eval()
     with torch.no_grad():
-        out = model(test_data.x, test_data.edge_index, test_data.edge_attr)
+        out = model(test_data.x, test_data.edge_index, test_data.edge_attr, test_data.symbolic_rules)
         mse = mean_squared_error(test_data.y[test_data.test_mask].cpu().numpy(), 
                                  out[test_data.test_mask].cpu().numpy())
         r2 = r2_score(test_data.y[test_data.test_mask].cpu().numpy(), 
                       out[test_data.test_mask].cpu().numpy())
     return mse, r2
 
-def generate_explanation(city_name, prediction, feature_dict, thresholds, neighboring_cities, stats_analysis):
-    rainfall = feature_dict['rainfall']
-    temperature = feature_dict['temperature']
-    population = feature_dict['population']
+def generate_explanation(city_name, prediction, feature_dict, thresholds, neighboring_cities, stats_analysis, symbolic_rules_impact):
+    rainfall = feature_dict['pr']
+    temperature = feature_dict['tave']
+    population = feature_dict['pop_count_total']
     
     if prediction > thresholds['high_risk']:
         risk_level = "high"
@@ -261,6 +278,26 @@ def generate_explanation(city_name, prediction, feature_dict, thresholds, neighb
     else:
         explanation += "No specific high-risk factors were identified, but vigilance is still recommended. "
     
+    # Add explanation based on symbolic rules
+    rule_explanations = []
+    for rule, impact in symbolic_rules_impact.items():
+        if impact > 0:
+            if rule == 'climate':
+                rule_explanations.append("The climate conditions are favorable for mosquito breeding and survival.")
+            elif rule == 'environmental':
+                rule_explanations.append("The environmental factors increase the potential for mosquito habitats.")
+            elif rule == 'socioeconomic':
+                rule_explanations.append("Socioeconomic factors may contribute to increased dengue risk.")
+            elif rule == 'vector':
+                rule_explanations.append("There are indications of increased mosquito population.")
+            elif rule == 'human':
+                rule_explanations.append("Human factors, such as previous dengue cases, contribute to the risk.")
+            elif rule == 'temporal':
+                rule_explanations.append("The current time period is associated with higher dengue risk.")
+
+    if rule_explanations:
+        explanation += "Based on our analysis: " + " ".join(rule_explanations)
+
     if stats_analysis:
         explanation += f"\n\nStatistical Analysis:\n"
         explanation += f"- Average dengue cases: {stats_analysis['mean_cases']:.2f if stats_analysis['mean_cases'] is not None else 'N/A'} "
@@ -306,7 +343,7 @@ def generate_explanation(city_name, prediction, feature_dict, thresholds, neighb
         ]
     }
     
-    explanation += "\nBased on this risk level and statistical analysis, we recommend: "
+    explanation += "\nBased on this risk level and analysis, we recommend: "
     explanation += ", ".join(recommendations[risk_level]) + ". "
     
     if stats_analysis and stats_analysis['trend_direction'] == 'Increasing':
@@ -347,17 +384,17 @@ def perform_statistical_analysis(data):
 
     # Basic statistics
     stats_dict = {
-        'mean_cases': data['dengue_cases'].mean(),
-        'median_cases': data['dengue_cases'].median(),
-        'std_cases': data['dengue_cases'].std(),
-        'mean_temperature': data['temperature'].mean(),
-        'mean_rainfall': data['rainfall'].mean(),
+        'mean_cases': data['case_total_dengue'].mean(),
+        'median_cases': data['case_total_dengue'].median(),
+        'std_cases': data['case_total_dengue'].std(),
+        'mean_temperature': data['tave'].mean(),
+        'mean_rainfall': data['pr'].mean(),
     }
     
     # Correlation analysis
     if len(data) > 2:  # Need more than 2 points for correlation
-        corr_temp = stats.pearsonr(data['temperature'], data['dengue_cases'])
-        corr_rain = stats.pearsonr(data['rainfall'], data['dengue_cases'])
+        corr_temp = stats.pearsonr(data['tave'], data['case_total_dengue'])
+        corr_rain = stats.pearsonr(data['pr'], data['case_total_dengue'])
         stats_dict['temp_correlation'] = corr_temp[0]
         stats_dict['temp_correlation_p'] = corr_temp[1]
         stats_dict['rain_correlation'] = corr_rain[0]
@@ -370,7 +407,7 @@ def perform_statistical_analysis(data):
     
     # Trend analysis
     if len(data) >= 4:  # Need at least 4 points for seasonal decompose
-        trend = seasonal_decompose(data['dengue_cases'], model='additive', period=4).trend
+        trend = seasonal_decompose(data['case_total_dengue'], model='additive', period=4).trend
         stats_dict['trend_start'] = trend.iloc[0]
         stats_dict['trend_end'] = trend.iloc[-1]
         stats_dict['trend_direction'] = 'Increasing' if trend.iloc[-1] > trend.iloc[0] else 'Decreasing'
