@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select, create_engine, and_, func
 import logging
 from werkzeug.utils import secure_filename
+import statistics
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -228,43 +229,47 @@ def model_management():
 def train():
     global model, graph_data, feature_scaler, city_names, engine, model_status
     
-    stmt = select(CityData)
-    with engine.connect() as connection:
-        result = connection.execute(stmt)
-        city_data = pd.DataFrame(result.fetchall(), columns=result.keys())
-    
-    if city_data.empty:
-        return jsonify({"error": "No data available. Please upload data first."})
-    
-    print("Sample of city_data before engineering features:")
-    print(city_data.head())
-    print(city_data.dtypes)
-    
-    city_data = engineer_features(city_data)
-    
-    print("Sample of city_data after engineering features:")
-    print(city_data.head())
-    print(city_data.dtypes)
-    
-    graph_data, feature_scaler = create_graph(city_data)
-    
-    train_data, test_data = train_test_split_graph(graph_data, test_size=0.2, random_state=42)
-    
-    model = train_model(train_data)
-    
-    mse, r2 = evaluate_model(model, test_data)
-    
-    city_names = city_data['adm3_en'].unique().tolist()
-    
-    model_status = "Trained"
-    
-    return jsonify({
-        "message": "Model trained successfully",
-        "performance": {
-            "mse": float(mse),
-            "r2": float(r2)
-        }
-    })
+    try:
+        stmt = select(CityData)
+        with engine.connect() as connection:
+            result = connection.execute(stmt)
+            city_data = pd.DataFrame(result.fetchall(), columns=result.keys())
+        
+        if city_data.empty:
+            return jsonify({"error": "No data available. Please upload data first."})
+        
+        logger.info("Sample of city_data before engineering features:")
+        logger.info(city_data.head())
+        logger.info(city_data.dtypes)
+        
+        city_data = engineer_features(city_data)
+        
+        logger.info("Sample of city_data after engineering features:")
+        logger.info(city_data.head())
+        logger.info(city_data.dtypes)
+        
+        graph_data, feature_scaler = create_graph(city_data)
+        
+        graph_data = train_test_split_graph(graph_data, test_size=0.2, random_state=42)
+        
+        model = train_model(graph_data)
+        
+        mse, r2 = evaluate_model(model, graph_data)
+        
+        city_names = city_data['adm3_en'].unique().tolist()
+        
+        model_status = "Trained"
+        
+        return jsonify({
+            "message": "Model trained successfully",
+            "performance": {
+                "mse": float(mse),
+                "r2": float(r2)
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error in training process: {str(e)}")
+        return jsonify({"error": f"An error occurred during training: {str(e)}"}), 500
 
 @app.route('/plot', methods=['GET'])
 def plot():
@@ -383,6 +388,14 @@ def predict():
 def risk_monitor():
     return render_template('risk_monitor.html')
 
+# for debugging the prediction output in the risk data
+def check_tensor_for_issues(tensor, tensor_name):
+    logger.debug(f"{tensor_name} shape: {tensor.shape}")
+    logger.debug(f"{tensor_name} dtype: {tensor.dtype}")
+    logger.debug(f"NaN values in {tensor_name}: {torch.isnan(tensor).sum()}")
+    logger.debug(f"Inf values in {tensor_name}: {torch.isinf(tensor).sum()}")
+    logger.debug(f"{tensor_name} stats: min={tensor.min().item()}, max={tensor.max().item()}, mean={tensor.mean().item()}")
+
 @app.route('/get_risk_data')
 def get_risk_data():
     global model, graph_data, feature_scaler, city_names, engine
@@ -438,8 +451,44 @@ def get_risk_data():
 
         logger.info("Making predictions")
         model.eval()
-        with torch.no_grad():
-            predictions = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr, graph_data.symbolic_rules).cpu().numpy()
+
+        # Check model parameters for NaN values
+        for name, param in model.named_parameters():
+            if torch.isnan(param).any():
+                logger.error(f"NaN values found in model parameter: {name}")
+
+        try:
+            with torch.no_grad():
+                # Log input tensor shapes
+                logger.info(f"graph_data.x shape: {graph_data.x.shape}")
+                logger.info(f"graph_data.edge_index shape: {graph_data.edge_index.shape}")
+                logger.info(f"graph_data.edge_attr shape: {graph_data.edge_attr.shape}")
+                logger.info(f"graph_data.symbolic_rules shape: {graph_data.symbolic_rules.shape}")
+
+                # Process all nodes at once
+                predictions = model(graph_data.x, graph_data.edge_index, graph_data.edge_attr, graph_data.symbolic_rules)
+                predictions = predictions.cpu().numpy()
+
+                # Convert predictions to native Python float
+                predictions = predictions.astype(float).tolist()
+
+                logger.info(f"Predictions shape: {len(predictions)}")
+                logger.info(f"Predictions: {predictions}")
+
+                # Log prediction statistics
+                non_nan_predictions = [p for p in predictions if p is not None and not np.isnan(p)]
+                if non_nan_predictions:
+                    logger.info(f"Prediction stats: min={min(non_nan_predictions)}, max={max(non_nan_predictions)}, mean={sum(non_nan_predictions)/len(non_nan_predictions)}, median={statistics.median(non_nan_predictions)}")
+                else:
+                    logger.warning("All predictions are None or NaN")
+                
+                logger.info(f"Number of None or NaN predictions: {sum(1 for p in predictions if p is None or np.isnan(p))}")
+
+        except Exception as e:
+            logger.error(f"Error during prediction: {str(e)}", exc_info=True)
+            predictions = [None] * len(cities)
+            logger.info("Set all predictions to None due to error")
+
         logger.info(f"Made {len(predictions)} predictions")
 
         thresholds = {
@@ -459,9 +508,9 @@ def get_risk_data():
                 continue
             city_data = city_data.iloc[0]
             
-            prediction = float(predictions[i])
-            if np.isnan(prediction):
-                prediction = None  # Replace NaN with None
+            prediction = predictions[i] if i < len(predictions) else None
+            if isinstance(prediction, float) and np.isnan(prediction):
+                prediction = None
 
             if prediction is not None and prediction > thresholds['high_risk']:
                 risk_level = "High"
@@ -469,6 +518,8 @@ def get_risk_data():
                 risk_level = "Moderate"
             else:
                 risk_level = "Low"
+            
+            logger.info(f"Risk level for {city}: {risk_level} (prediction: {prediction})")
             
             try:
                 symbolic_rules_impact = apply_symbolic_rules(city_data)
@@ -497,9 +548,15 @@ def get_risk_data():
 
         logger.info(f"Prepared risk data for {len(risk_data)} cities")
 
+        # Ensure all numeric values in risk_data are native Python types
+        for city_data in risk_data:
+            for key, value in city_data.items():
+                if isinstance(value, (np.integer, np.floating)):
+                    city_data[key] = value.item()
+
         # Calculate additional statistics for dashboard charts
-        avg_temperature = np.mean([city['temperature'] for city in risk_data if city['temperature'] is not None])
-        avg_rainfall = np.mean([city['rainfall'] for city in risk_data if city['rainfall'] is not None])
+        avg_temperature = float(np.nanmean([city['temperature'] for city in risk_data if city['temperature'] is not None]))
+        avg_rainfall = float(np.nanmean([city['rainfall'] for city in risk_data if city['rainfall'] is not None]))
         risk_distribution = {
             'High': len([city for city in risk_data if city['risk_level'] == 'High']),
             'Moderate': len([city for city in risk_data if city['risk_level'] == 'Moderate']),

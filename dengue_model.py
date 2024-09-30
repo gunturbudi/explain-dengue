@@ -13,56 +13,112 @@ import logging
 logger = logging.getLogger(__name__)
 
 def engineer_features(df):
-    logger.info(f"Starting feature engineering. Initial shape: {df.shape}")
+    logger.info(f"Starting city-based feature engineering. Initial shape: {df.shape}")
 
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values(['adm3_en', 'date'])
-    
-    # Add lag features
-    for col in ['tave', 'pr', 'case_total_dengue']:
-        df[f'{col}_lag1'] = df.groupby('adm3_en')[col].shift(1)
-    
-    # Add rolling window features
-    df['cumulative_rainfall_4w'] = df.groupby('adm3_en')['pr'].rolling(window=4, min_periods=1).sum().reset_index(0, drop=True)
-    
-    # Add temporal features
-    df['day_of_year'] = df['date'].dt.dayofyear
-    df['month'] = df['date'].dt.month
-    
-    # For the latest data point of each city, use the current values for lag features
-    latest_mask = df.groupby('adm3_en')['date'].transform('max') == df['date']
-    for col in ['tave', 'pr', 'case_total_dengue']:
-        df.loc[latest_mask, f'{col}_lag1'] = df.loc[latest_mask, col]
-    
-    # Improved handling of NaN values
-    numeric_columns = df.select_dtypes(include=[np.number]).columns
-    for col in numeric_columns:
-        if col in ['pct_area_cropland', 'pct_area_herbaceous_wetland', 'pct_area_mangroves', 'pct_area_permanent_water_bodies']:
-            df[col] = df[col].fillna(0)
-        elif col in ['pop_count_mean', 'pop_count_stdev', 'pop_count_total', 'pop_density_mean', 'pop_density_stdev']:
-            df[col] = df.groupby('adm3_en')[col].transform(lambda x: x.fillna(x.mean()))
-        elif col in ['spi3', 'spi6', 'pnp']:
-            df[col] = df[col].fillna(df[col].mean())
-        elif col == 'death_total_dengue':
-            df[col] = df[col].fillna(0)  # Assume no deaths if not reported
+    try:
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values(['adm3_en', 'date'])
+        
+        # Calculate global means for all numeric columns
+        numeric_columns = df.select_dtypes(include=[np.number]).columns
+        global_means = df[numeric_columns].mean()
+
+        # Create a dictionary of default values for columns with NaN global means
+        default_values = {}
+        for col in numeric_columns:
+            if pd.isna(global_means[col]):
+                if 'pct' in col:  # Percentage columns
+                    default_values[col] = 0
+                elif 'count' in col or 'total' in col:  # Count or total columns
+                    default_values[col] = 0
+                else:  # For other columns, use median or 0 if median is also NaN
+                    median = df[col].median()
+                    default_values[col] = 0 if pd.isna(median) else median
+            else:
+                default_values[col] = global_means[col]
+
+        # Log the default values
+        logger.info("Default values used for imputation:")
+        for col, value in default_values.items():
+            logger.info(f"{col}: {value}")
+        
+        def engineer_city_features(city_df):
+            # Add lag features
+            for col in ['tave', 'pr', 'case_total_dengue', 'ndvi', 'rh', 'tmax', 'tmin']:
+                city_df[f'{col}_lag1'] = city_df[col].shift(1)
+            
+            # Add rolling window features
+            city_df['cumulative_rainfall_4w'] = city_df['pr'].rolling(window=4, min_periods=1).sum()
+            city_df['avg_temp_4w'] = city_df['tave'].rolling(window=4, min_periods=1).mean()
+            
+            # Add temporal features
+            city_df['day_of_year'] = city_df['date'].dt.dayofyear
+            city_df['month'] = city_df['date'].dt.month
+            
+            # City-specific features
+            city_df['tave_anomaly'] = city_df['tave'] - city_df['tave'].mean()
+            city_df['pr_anomaly'] = city_df['pr'] - city_df['pr'].mean()
+            
+            # Temperature range
+            city_df['temp_range'] = city_df['tmax'] - city_df['tmin']
+            
+            # For the latest data point, use the current values for lag features
+            latest_mask = city_df['date'] == city_df['date'].max()
+            for col in ['tave', 'pr', 'case_total_dengue', 'ndvi', 'rh', 'tmax', 'tmin']:
+                city_df.loc[latest_mask, f'{col}_lag1'] = city_df.loc[latest_mask, col]
+            
+            # City-specific handling of NaN values
+            for col in numeric_columns:
+                if col in ['pct_area_cropland', 'pct_area_herbaceous_wetland', 'pct_area_mangroves', 'pct_area_permanent_water_bodies']:
+                    non_nan_max = city_df[col].max()
+                    if pd.isna(non_nan_max):
+                        city_df[col] = city_df[col].fillna(default_values[col])
+                    else:
+                        city_df[col] = city_df[col].fillna(non_nan_max)
+                else:
+                    city_mean = city_df[col].mean()
+                    if pd.isna(city_mean):
+                        city_df[col] = city_df[col].fillna(default_values[col])
+                    else:
+                        city_df[col] = city_df[col].fillna(city_mean)
+            
+            # Add a binary indicator for imputed data
+            for col in numeric_columns:
+                city_df[f'{col}_is_imputed'] = (city_df[col] == default_values[col]).astype(int)
+            
+            return city_df
+        
+        # Apply city-specific feature engineering
+        df = df.groupby('adm3_en').apply(engineer_city_features).reset_index(drop=True)
+        
+        # Ensure no infinity values
+        df = df.replace([np.inf, -np.inf], np.finfo(np.float64).max)
+        
+        # Final check to fill any remaining NaN values with default values
+        df = df.fillna(default_values)
+        
+        logger.info(f"Final shape after city-based feature engineering: {df.shape}")
+        logger.info(f"Columns after city-based feature engineering: {df.columns.tolist()}")
+        
+        nan_columns = df.columns[df.isna().any()].tolist()
+        if nan_columns:
+            logger.warning(f"NaN values found in columns: {nan_columns}")
+            logger.warning(f"Number of NaN values: \n{df[nan_columns].isna().sum()}")
         else:
-            df[col] = df.groupby('adm3_en')[col].transform(lambda x: x.fillna(x.mean()))
+            logger.info("No NaN values remain after preprocessing")
+        
+        # Add this block to diagnose any remaining NaN values
+        if nan_columns:
+            for col in nan_columns:
+                nan_rows = df[df[col].isna()]
+                logger.warning(f"Sample of rows with NaN in {col}:")
+                logger.warning(nan_rows[['adm3_en', 'date', col]].head())
+        
+        return df
+    except Exception as e:
+        logger.error(f"Error in city-based feature engineering: {str(e)}")
+        raise
     
-    # Ensure no infinity values
-    df = df.replace([np.inf, -np.inf], np.finfo(np.float64).max)
-    
-    logger.info(f"Final shape after feature engineering: {df.shape}")
-    logger.info(f"Columns after feature engineering: {df.columns.tolist()}")
-    
-    nan_columns = df.columns[df.isna().any()].tolist()
-    if nan_columns:
-        logger.warning(f"NaN values found in columns: {nan_columns}")
-        logger.warning(f"Number of NaN values: \n{df[nan_columns].isna().sum()}")
-    else:
-        logger.info("No NaN values remain after preprocessing")
-    
-    return df
-
 def create_graph(df):
     logger.info(f"Starting graph creation with {len(df)} rows of data")
     
@@ -201,55 +257,95 @@ def train_test_split_graph(data, test_size=0.2, random_state=None):
         torch.manual_seed(random_state)
     
     perm = torch.randperm(num_nodes)
-    train_indices = perm[:num_train]
-    test_indices = perm[num_train:]
-    
     train_mask = torch.zeros(num_nodes, dtype=torch.bool)
     test_mask = torch.zeros(num_nodes, dtype=torch.bool)
-    train_mask[train_indices] = True
-    test_mask[test_indices] = True
+    train_mask[perm[:num_train]] = True
+    test_mask[perm[num_train:]] = True
     
-    train_data = data.clone()
-    test_data = data.clone()
+    data.train_mask = train_mask
+    data.test_mask = test_mask
     
-    train_data.train_mask = train_mask
-    test_data.test_mask = test_mask
-    
-    return train_data, test_data
+    return data
 
-def train_model(train_data, num_epochs=200):
+def train_model(data, num_epochs=200, patience=20):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    num_symbolic_rules = train_data.symbolic_rules.shape[1]
-    model = DengueGNN(num_node_features=train_data.num_node_features, 
-                      num_edge_features=train_data.num_edge_features, 
+    num_symbolic_rules = data.symbolic_rules.shape[1]
+    model = DengueGNN(num_node_features=data.num_node_features, 
+                      num_edge_features=data.num_edge_features, 
                       hidden_channels=64,
                       num_symbolic_rules=num_symbolic_rules).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
     criterion = torch.nn.MSELoss()
 
-    train_data = train_data.to(device)
+    data = data.to(device)
     model.train()
+
+    best_val_loss = float('inf')
+    best_model = None
+    counter = 0
+
     for epoch in range(num_epochs):
+        model.train()
         optimizer.zero_grad()
-        out = model(train_data.x, train_data.edge_index, train_data.edge_attr, train_data.symbolic_rules)
-        loss = criterion(out[train_data.train_mask], train_data.y[train_data.train_mask])
+        out = model(data.x, data.edge_index, data.edge_attr, data.symbolic_rules)
+        loss = criterion(out[data.train_mask], data.y[data.train_mask])
         loss.backward()
+        
+        # Check for NaN in gradients
+        if any(param.grad is not None and torch.isnan(param.grad).any() for param in model.parameters()):
+            raise ValueError("NaN gradients encountered during training")
+        
         optimizer.step()
         
-        if any(torch.isnan(param).any() for param in model.parameters()):
-            raise ValueError("NaN values found in model parameters during training")
+        # Validation
+        model.eval()
+        with torch.no_grad():
+            val_out = model(data.x, data.edge_index, data.edge_attr, data.symbolic_rules)
+            val_loss = criterion(val_out[data.test_mask], data.y[data.test_mask])
+        
+        scheduler.step(val_loss)
+        
+        # Logging
+        if epoch % 10 == 0:
+            logger.info(f"Epoch {epoch}: Train Loss: {loss.item():.4f}, Val Loss: {val_loss.item():.4f}")
+        
+        # Early stopping
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model = model.state_dict()
+            counter = 0
+        else:
+            counter += 1
+            if counter >= patience:
+                logger.info(f"Early stopping triggered at epoch {epoch}")
+                break
     
+    # Load best model
+    model.load_state_dict(best_model)
     return model
 
-def evaluate_model(model, test_data):
+def evaluate_model(model, data):
     model.eval()
+    device = next(model.parameters()).device
+    data = data.to(device)
     with torch.no_grad():
-        out = model(test_data.x, test_data.edge_index, test_data.edge_attr, test_data.symbolic_rules)
-        mse = mean_squared_error(test_data.y[test_data.test_mask].cpu().numpy(), 
-                                 out[test_data.test_mask].cpu().numpy())
-        r2 = r2_score(test_data.y[test_data.test_mask].cpu().numpy(), 
-                      out[test_data.test_mask].cpu().numpy())
+        out = model(data.x, data.edge_index, data.edge_attr, data.symbolic_rules)
+        mse = mean_squared_error(data.y[data.test_mask].cpu().numpy(), 
+                                 out[data.test_mask].cpu().numpy())
+        r2 = r2_score(data.y[data.test_mask].cpu().numpy(), 
+                      out[data.test_mask].cpu().numpy())
     return mse, r2
+
+def check_for_nans(data, step_name):
+    if isinstance(data, pd.DataFrame):
+        nan_count = data.isna().sum().sum()
+    elif isinstance(data, torch.Tensor):
+        nan_count = torch.isnan(data).sum().item()
+    else:
+        nan_count = np.isnan(data).sum()
+    
+    app.logger.info(f"NaN check after {step_name}: {nan_count} NaN values found")
 
 def generate_explanation(city_name, prediction, feature_dict, thresholds, neighboring_cities, stats_analysis, symbolic_rules_impact):
     rainfall = feature_dict['pr']
