@@ -13,6 +13,162 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+import pandas as pd
+import numpy as np
+from typing import List, Dict, Any
+
+def generate_java_dengue_data(num_years: int = 10) -> pd.DataFrame:
+    np.random.seed(42)
+    
+    # Cities in Java with their coordinates, populations, and risk factors
+    cities: List[Dict[str, Any]] = [
+        {"name": "Jakarta", "lat": -6.2088, "lon": 106.8456, "population": 10562088, "risk": 0.9},
+        {"name": "Surabaya", "lat": -7.2575, "lon": 112.7521, "population": 2874699, "risk": 0.8},
+        {"name": "Bandung", "lat": -6.9175, "lon": 107.6191, "population": 2497938, "risk": 0.7},
+        {"name": "Semarang", "lat": -6.9932, "lon": 110.4203, "population": 1621384, "risk": 0.75},
+        {"name": "Yogyakarta", "lat": -7.7956, "lon": 110.3695, "population": 422732, "risk": 0.6},
+        {"name": "Surakarta", "lat": -7.5655, "lon": 110.8243, "population": 503421, "risk": 0.65},
+        {"name": "Malang", "lat": -7.9797, "lon": 112.6304, "population": 843810, "risk": 0.7},
+        {"name": "Cirebon", "lat": -6.7320, "lon": 108.5523, "population": 316277, "risk": 0.6},
+        {"name": "Pekalongan", "lat": -6.8898, "lon": 109.6746, "population": 301870, "risk": 0.55},
+        {"name": "Tegal", "lat": -6.8797, "lon": 109.1256, "population": 250668, "risk": 0.5},
+    ]
+    
+    dates = pd.date_range(start='2015-01-01', periods=num_years*52, freq='W')
+    
+    data = []
+    for city in cities:
+        base_temp = np.random.uniform(26, 30)
+        base_rainfall = np.random.uniform(150, 350)
+        
+        for date in dates:
+            # Temperature variation (°C)
+            yearly_temp_cycle = np.sin(2 * np.pi * date.dayofyear / 365)
+            temp = max(22, min(35, base_temp + yearly_temp_cycle + np.random.normal(0, 1)))
+            
+            # Rainfall variation (mm)
+            is_wet_season = date.month in [11, 12, 1, 2, 3, 4]
+            season_factor = 1.5 if is_wet_season else 0.5
+            yearly_rain_cycle = np.cos(2 * np.pi * date.dayofyear / 365)
+            rainfall = max(0, base_rainfall * (1 + 0.5 * yearly_rain_cycle) * season_factor * np.random.lognormal(0, 0.3))
+            
+            # Population with yearly growth
+            years_passed = (date.year - 2015) + date.dayofyear / 365
+            population = city["population"] * (1 + 0.01) ** years_passed
+            
+            # Dengue cases calculation
+            base_dengue_factor = city["risk"] * (temp/28) * (rainfall/200) * (population/1000000)
+            
+            # Add yearly cycle and long-term trend
+            yearly_cycle = 1 + 0.3 * np.sin(2 * np.pi * date.dayofyear / 365)
+            long_term_trend = 1 + 0.1 * np.sin(2 * np.pi * years_passed / 10)  # 10-year cycle
+            
+            dengue_factor = base_dengue_factor * yearly_cycle * long_term_trend
+            
+            # Add randomness and ensure integer values
+            dengue_cases = max(0, int(np.random.negative_binomial(n=5, p=0.3) * dengue_factor))
+            
+            data.append({
+                'city': city["name"],
+                'date': date.date(),
+                'temperature': round(temp, 1),
+                'rainfall': round(rainfall, 1),
+                'population': int(population),
+                'dengue_cases': dengue_cases,
+                'latitude': city["lat"],
+                'longitude': city["lon"],
+                'risk_factor': city["risk"]
+            })
+    
+    df = pd.DataFrame(data)
+    
+    # Ensure no NaN values
+    assert df.isna().sum().sum() == 0, "NaN values found in generated data"
+    
+    return df
+
+import pandas as pd
+import numpy as np
+from typing import List, Dict, Any
+
+def generate_philippines_dengue_data(num_years: int = 10) -> pd.DataFrame:
+    np.random.seed(42)
+    
+    # Major cities in the Philippines with their coordinates, populations, and risk factors
+    cities: List[Dict[str, Any]] = [
+        {"name": "Manila", "lat": 14.5995, "lon": 120.9842, "population": 1780148, "risk": 0.9},
+        {"name": "Quezon City", "lat": 14.6760, "lon": 121.0437, "population": 2936116, "risk": 0.85},
+        {"name": "Davao City", "lat": 7.0707, "lon": 125.6087, "population": 1632991, "risk": 0.8},
+        {"name": "Cebu City", "lat": 10.3157, "lon": 123.8854, "population": 922611, "risk": 0.75},
+        {"name": "Zamboanga City", "lat": 6.9214, "lon": 122.0790, "population": 861799, "risk": 0.7},
+        {"name": "Cagayan de Oro", "lat": 8.4542, "lon": 124.6319, "population": 675950, "risk": 0.65},
+        {"name": "Iloilo City", "lat": 10.7202, "lon": 122.5621, "population": 447992, "risk": 0.6},
+        {"name": "Bacolod", "lat": 10.6840, "lon": 122.9563, "population": 561875, "risk": 0.55},
+        {"name": "General Santos", "lat": 6.1164, "lon": 125.1716, "population": 594446, "risk": 0.5},
+        {"name": "Baguio", "lat": 16.4023, "lon": 120.5960, "population": 345366, "risk": 0.45},
+    ]
+    
+    dates = pd.date_range(start='2015-01-01', periods=num_years*52, freq='W')
+    
+    data = []
+    for city in cities:
+        base_temp = np.random.uniform(26, 32)
+        base_rainfall = np.random.uniform(150, 400)
+        
+        for date in dates:
+            # Temperature variation (°C)
+            yearly_temp_cycle = 2 * np.sin(2 * np.pi * date.dayofyear / 365)
+            temp = max(20, min(38, base_temp + yearly_temp_cycle + np.random.normal(0, 1)))
+            
+            # Rainfall variation (mm)
+            # Philippines has a more complex rainfall pattern, varying by region
+            if city["lat"] > 12:  # Northern Philippines
+                is_wet_season = date.month in [6, 7, 8, 9, 10]
+            else:  # Southern Philippines
+                is_wet_season = date.month in [10, 11, 12, 1, 2]
+            
+            season_factor = 1.5 if is_wet_season else 0.5
+            yearly_rain_cycle = np.cos(2 * np.pi * date.dayofyear / 365)
+            rainfall = max(0, base_rainfall * (1 + 0.5 * yearly_rain_cycle) * season_factor * np.random.lognormal(0, 0.3))
+            
+            # Population with yearly growth
+            years_passed = (date.year - 2015) + date.dayofyear / 365
+            population = city["population"] * (1 + 0.015) ** years_passed  # 1.5% annual growth
+            
+            # Dengue cases calculation
+            base_dengue_factor = city["risk"] * (temp/30) * (rainfall/250) * (population/1000000)
+            
+            # Add yearly cycle and long-term trend
+            yearly_cycle = 1 + 0.4 * np.sin(2 * np.pi * date.dayofyear / 365)
+            long_term_trend = 1 + 0.15 * np.sin(2 * np.pi * years_passed / 10)  # 10-year cycle
+            
+            # El Niño Southern Oscillation (ENSO) effect
+            enso_cycle = 1 + 0.2 * np.sin(2 * np.pi * years_passed / 5)  # 5-year ENSO cycle
+            
+            dengue_factor = base_dengue_factor * yearly_cycle * long_term_trend * enso_cycle
+            
+            # Add randomness and ensure integer values
+            dengue_cases = max(0, int(np.random.negative_binomial(n=5, p=0.3) * dengue_factor))
+            
+            data.append({
+                'city': city["name"],
+                'date': date.date(),
+                'temperature': round(temp, 1),
+                'rainfall': round(rainfall, 1),
+                'population': int(population),
+                'dengue_cases': dengue_cases,
+                'latitude': city["lat"],
+                'longitude': city["lon"],
+                'risk_factor': city["risk"]
+            })
+    
+    df = pd.DataFrame(data)
+    
+    # Ensure no NaN values
+    assert df.isna().sum().sum() == 0, "NaN values found in generated data"
+    
+    return df
+
 def generate_fictional_data(num_cities=50, num_weeks=104):
     np.random.seed(42)
     cities = [f'CITY_{i:03d}' for i in range(num_cities)]

@@ -43,7 +43,9 @@ from dengue_model import (
     generate_explanation,
     train_model,
     evaluate_model,
-    perform_statistical_analysis
+    perform_statistical_analysis,
+    generate_java_dengue_data,
+    generate_philippines_dengue_data
 )
 
 # Global variables to store the model and data
@@ -112,7 +114,7 @@ def reset_data():
         db.session.commit()
 
         # Generate new data
-        city_data = generate_fictional_data()
+        city_data = generate_philippines_dengue_data()
         
         for _, row in city_data.iterrows():
             city_record = CityData(
@@ -144,7 +146,9 @@ def generate_data():
     if CityData.query.first():
         return jsonify({"message": "Data already exists in the database"})
     
-    city_data = generate_fictional_data()
+    # city_data = generate_fictional_data()
+    city_data = generate_philippines_dengue_data()
+    # city_data = generate_java_dengue_data()
     
     for _, row in city_data.iterrows():
         city_record = CityData(
